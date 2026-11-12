@@ -1,15 +1,18 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/game"]
+members = [
+    "crates/engine",
+    "crates/game",
+]
 
 [workspace.dependencies]
-# Общие зависимости, чтобы версии не расходились
 anyhow = "1.0"
 ash = "0.38"
 ash-window = "0.13"
 winit = "0.30"
 glam = "0.29"
 shaderc = "0.8"
+bytemuck = { version = "1", features = ["derive"] }
 
 [profile.dev.package."*"]
 opt-level = 3

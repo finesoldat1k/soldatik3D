@@ -1,0 +1,10 @@
+[package]
+name = "game"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+engine = { path = "../engine" }
+anyhow = { workspace = true }
+winit = { workspace = true }
+glam = { workspace = true }

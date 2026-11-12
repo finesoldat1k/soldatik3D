@@ -1,22 +1,13 @@
 [package]
-name = "soldatik3D"
-version = "0.0.2"
+name = "engine"
+version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-ash = "0.38"
-ash-window = "0.13"
-winit = "0.30"
-glam = "0.29"           # Математика
-shaderc = "0.8"         # Компилятор шейдеров GLSL -> SPIR-V
-
-# Debug-сборка: зависимости с оптимизацией — окно будет отзывчивым даже в dev
-[profile.dev.package."*"]
-opt-level = 3
-
-# Release: LTO и один codegen unit ради максимальной производительности
-[profile.release]
-lto = "thin"
-codegen-units = 1
-panic = "abort" 
+anyhow = { workspace = true }
+ash = { workspace = true }
+ash-window = { workspace = true }
+winit = { workspace = true }
+glam = { workspace = true }
+shaderc = { workspace = true }
+bytemuck = { workspace = true }
