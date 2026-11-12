@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Soldatik3D
-Exec=soldatik3D
-Icon=soldatik3D
-Type=Application
-Categories=Game;
-Comment=3D движок на Rust и Vulkan
