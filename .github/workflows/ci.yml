@@ -26,7 +26,8 @@ jobs:
             libvulkan-dev vulkan-validationlayers-dev spirv-tools \
             libx11-dev libxcb-randr0-dev libxcb-xinerama0-dev libxcursor-dev libxi-dev \
             libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-            cmake pkg-config libssl-dev
+            cmake pkg-config libssl-dev \
+            clang lld
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -42,16 +43,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --features "vulkan opengl"
 
       - name: Build workspace
-        run: cargo build --workspace --all-features
+        run: cargo build --workspace --features "vulkan opengl"
 
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --features "vulkan opengl"
 
       - name: Build docs
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps --features "vulkan opengl"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -62,7 +63,7 @@ jobs:
           retention-days: 7
 
   windows:
-    name: Windows (latest)
+    name: Windows (native MSVC)
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -88,16 +89,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --features "vulkan opengl"
 
       - name: Build workspace
-        run: cargo build --workspace --all-features
+        run: cargo build --workspace --features "vulkan opengl"
 
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --features "vulkan opengl"
 
       - name: Build docs
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps --features "vulkan opengl"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -146,13 +147,29 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy (host target only)
-        run: cargo clippy --workspace --all-targets --all-features --target x86_64-unknown-linux-gnu
+        run: cargo clippy --workspace --all-targets --features "opengl" --target x86_64-unknown-linux-gnu
+
+      - name: Configure cargo for Android
+        run: |
+          cat >> ~/.cargo/config.toml <<'EOF'
+          [target.aarch64-linux-android]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          [target.armv7-linux-androideabi]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          [target.x86_64-linux-android]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          EOF
 
       - name: Build for Android targets
         run: |
           for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
             echo "Building for $target..."
-            cargo build --workspace --all-features --target $target
+            cargo build --workspace --features "opengl" --target $target
           done
 
       - name: Upload Android build artifacts
@@ -166,7 +183,7 @@ jobs:
   windows-cross:
     name: Windows Cross-Compile (Ubuntu)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -176,11 +193,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             mingw-w64 \
+            binutils-mingw-w64-x86-64 \
             wine64 \
             libvulkan-dev vulkan-validationlayers-dev spirv-tools \
             libx11-dev libxcb-randr0-dev libxcb-xinerama0-dev libxcursor-dev libxi-dev \
             libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-            cmake pkg-config libssl-dev
+            cmake pkg-config libssl-dev \
+            clang lld
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -197,10 +216,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features --target x86_64-pc-windows-gnu
+        run: cargo clippy --workspace --all-targets --features "vulkan opengl" --target x86_64-pc-windows-gnu
 
       - name: Build Windows cross-compile
-        run: cargo build --workspace --all-features --target x86_64-pc-windows-gnu
+        run: cargo build --workspace --features "vulkan opengl" --target x86_64-pc-windows-gnu
 
       - name: Upload Windows cross-compile artifacts
         uses: actions/upload-artifact@v4
@@ -221,9 +240,48 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu, aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
-      - name: Build release
-        run: cargo build --workspace --all-features --release
+      - name: Install cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mingw-w64 \
+            binutils-mingw-w64-x86-64 \
+            wine64
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Linux release
+        run: cargo build --workspace --features "vulkan opengl" --release
+
+      - name: Build Windows cross-compile release
+        run: |
+          cargo build --workspace --features "vulkan opengl" --release --target x86_64-pc-windows-gnu
+
+      - name: Build Android release
+        run: |
+          cat >> ~/.cargo/config.toml <<'EOF'
+          [target.aarch64-linux-android]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          [target.armv7-linux-androideabi]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          [target.x86_64-linux-android]
+          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
+          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          EOF
+          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
+            echo "Building Android release for $target..."
+            cargo build --workspace --features "opengl" --release --target $target
+          done
 
       - name: Run release tests
         run: cargo test --workspace --all-features --release
@@ -232,11 +290,14 @@ jobs:
         run: |
           mkdir -p release
           # Linux
-          tar -czf release/soldatik3d-linux-x86_64.tar.gz -C target/release demo
+          tar -czf release/soldatik3d-linux-x86_64.tar.gz -C target/release examples/demo
           # Windows (cross-compiled)
-          cargo install cross
-          cross build --workspace --all-features --release --target x86_64-pc-windows-gnu
-          zip -r release/soldatik3d-windows-x86_64.zip target/x86_64-pc-windows-gnu/release/demo.exe
+          tar -czf release/soldatik3d-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release examples/demo.exe
+          # Android
+          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
+            abi=$(case $target in aarch64-linux-android) echo arm64-v8a;; armv7-linux-androideabi) echo armeabi-v7a;; x86_64-linux-android) echo x86_64;; esac)
+            tar -czf release/soldatik3d-android-${abi}.tar.gz -C target/${target}/release examples/demo
+          done
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

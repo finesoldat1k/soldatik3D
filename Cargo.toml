@@ -6,7 +6,6 @@ members = [
     "crates/ui",
     "crates/render",
     "crates/platform",
-    "crates/vulkan",
     "crates/opengl",
     "crates/runtime",
     "examples/demo",

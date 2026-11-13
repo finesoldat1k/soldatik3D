@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Public runtime facade of the Soldatik3D engine"
 
 [features]
-default = ["vulkan", "opengl"]
+default = ["opengl"]
 vulkan = ["dep:vulkan"]
 opengl = ["dep:opengl"]
 
@@ -17,6 +17,8 @@ assets = { workspace = true }
 ui = { workspace = true }
 render = { workspace = true }
 platform = { workspace = true }
-vulkan = { workspace = true, optional = true }
 opengl = { workspace = true, optional = true }
 anyhow = { workspace = true }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+vulkan = { path = "../vulkan", optional = true }

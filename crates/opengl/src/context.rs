@@ -131,3 +131,8 @@ fn display_preference() -> DisplayApiPreference {
 fn display_preference() -> DisplayApiPreference {
     DisplayApiPreference::Cgl
 }
+
+#[cfg(target_os = "android")]
+fn display_preference() -> DisplayApiPreference {
+    DisplayApiPreference::Egl
+}

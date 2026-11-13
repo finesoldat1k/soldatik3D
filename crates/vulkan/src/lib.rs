@@ -5,6 +5,8 @@
 //! know about winit: the engine runtime passes a [`render::WindowSurface`]
 //! containing raw native handles.
 
+#![cfg(not(target_os = "android"))]
+
 mod buffer;
 mod commands;
 mod context;
