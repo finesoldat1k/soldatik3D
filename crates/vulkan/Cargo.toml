@@ -17,3 +17,4 @@ ash-window = { workspace = true }
 glam = { workspace = true }
 shaderc = { workspace = true }
 bytemuck = { workspace = true }
+png = "0.17"

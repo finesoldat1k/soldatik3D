@@ -1,10 +1,12 @@
 //! Demo game implementation of the engine `Game` trait.
 
 use runtime::glam::Vec3;
-use runtime::{Aabb, CameraRig, CommandContext, DebugView, Game, GameConfig, UpdateContext, World};
+use runtime::{
+    Aabb, CameraRig, CommandContext, DebugView, Game, GameConfig, InputMap, UpdateContext, World,
+};
 
 use crate::debug_ui::DebugMenu;
-use crate::player::Player;
+use crate::player::{Player, default_input_map};
 use crate::world;
 
 const GAME_COMMANDS: &[(&str, &str)] = &[
@@ -88,6 +90,10 @@ impl Game for DemoGame {
 
     fn debug_view(&self) -> DebugView {
         self.menu.view
+    }
+
+    fn input_map(&self) -> InputMap {
+        default_input_map()
     }
 
     fn command_help(&self) -> &'static [(&'static str, &'static str)] {

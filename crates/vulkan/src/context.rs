@@ -115,7 +115,11 @@ fn create_instance(entry: &Entry, window: WindowSurface) -> Result<Instance> {
 
     let validation_layer = CString::new("VK_LAYER_KHRONOS_validation")?;
     let mut layers: Vec<CString> = Vec::new();
-    if cfg!(debug_assertions) {
+    let want_validation = cfg!(debug_assertions)
+        || std::env::var("SOLDATIK3D_VALIDATION")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"));
+    if want_validation {
         let available = unsafe { entry.enumerate_instance_layer_properties()? };
         let supported = available.iter().any(|layer| {
             let name = unsafe { CStr::from_ptr(layer.layer_name.as_ptr()) };
@@ -124,7 +128,7 @@ fn create_instance(entry: &Entry, window: WindowSurface) -> Result<Instance> {
         if supported {
             layers.push(validation_layer);
         } else {
-            println!("[engine-vulkan] validation layer is not installed");
+            println!("[engine-vulkan] validation layer requested but not installed");
         }
     }
     let layer_ptrs: Vec<*const i8> = layers.iter().map(|layer| layer.as_ptr()).collect();

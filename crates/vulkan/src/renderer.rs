@@ -3,7 +3,7 @@ use ash::{Device, vk};
 use assets::{font_atlas_rgba8, generate_environment_cubemap};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
-use render::{BackendKind, FrameData, RenderStats, Renderer, WindowSurface};
+use render::{BackendKind, FrameData, RenderStats, Renderer, VsyncMode, WindowSurface};
 use scene::{Aabb, LightUniformBuffer, Scene, Vertex};
 use ui::UiVertex;
 
@@ -73,8 +73,9 @@ impl SwapchainFrame {
         ssao_pass: vk::RenderPass,
         swapchain_pass: vk::RenderPass,
         old_swapchain: vk::SwapchainKHR,
+        vsync: VsyncMode,
     ) -> Result<Self> {
-        let swapchain = Swapchain::new(context, size, Some(format), old_swapchain)?;
+        let swapchain = Swapchain::new(context, size, Some(format), old_swapchain, vsync)?;
         let extent = swapchain.extent;
         let depth = GpuImage::depth_target(context, extent.width, extent.height, false)?;
         let hdr = GpuImage::color_target(context, extent.width, extent.height, HDR_FORMAT)?;
@@ -266,10 +267,11 @@ pub struct VulkanRenderer {
     stats: RenderStats,
     size: (u32, u32),
     context: VulkanContext,
+    vsync: VsyncMode,
 }
 
 impl VulkanRenderer {
-    pub fn new(surface: WindowSurface, scene: &Scene) -> Result<Self> {
+    pub fn new(surface: WindowSurface, scene: &Scene, vsync: VsyncMode) -> Result<Self> {
         let size = surface.size();
         let context = VulkanContext::new(surface)?;
         let uploader = ImmediateCommands::new(
@@ -295,6 +297,7 @@ impl VulkanRenderer {
             ssao_render_pass.handle,
             swapchain_render_pass.handle,
             vk::SwapchainKHR::null(),
+            vsync,
         )?;
 
         let scene_gpu = GpuScene::upload(&context, &uploader, scene)?;
@@ -630,6 +633,7 @@ impl VulkanRenderer {
             stats,
             size,
             context,
+            vsync,
         })
     }
 
@@ -642,6 +646,14 @@ impl VulkanRenderer {
         if width == extent.width && height == extent.height {
             return Ok(());
         }
+        self.recreate_swapchain()
+    }
+
+    pub fn set_vsync(&mut self, vsync: VsyncMode) -> Result<()> {
+        if self.vsync == vsync {
+            return Ok(());
+        }
+        self.vsync = vsync;
         self.recreate_swapchain()
     }
 
@@ -718,6 +730,163 @@ impl VulkanRenderer {
 
     pub fn extent(&self) -> (u32, u32) {
         self.size
+    }
+
+    pub fn screenshot(&mut self) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let filename = format!("screenshot_{timestamp}.png");
+
+        let device = &self.context.device;
+        let queue = self.context.graphics_queue;
+
+        // Get any swapchain image (they all have the same extent and format)
+        let image = self.frame.swapchain.images[0];
+        let extent = self.frame.swapchain.extent;
+
+        // Create staging buffer for readback
+        let buffer_size = (extent.width * extent.height * 4) as u64;
+        let staging_buffer = crate::buffer::GpuBuffer::new(
+            &self.context.device,
+            &self.context.instance,
+            self.context.physical_device,
+            buffer_size,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        // Copy swapchain image to staging buffer
+        let cmd_pool =
+            crate::commands::CommandPool::new(&self.context.device, self.context.graphics_family)?;
+        let cmd_buf = cmd_pool.allocate(1)?[0];
+
+        unsafe {
+            device.begin_command_buffer(cmd_buf, &vk::CommandBufferBeginInfo::default())?;
+
+            // Transition swapchain image to TRANSFER_SRC_OPTIMAL (using legacy barrier)
+            let barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .image(image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+
+            // Copy image to buffer
+            let copy_region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(extent.width)
+                .buffer_image_height(extent.height)
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                });
+            device.cmd_copy_image_to_buffer(
+                cmd_buf,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                staging_buffer.handle,
+                std::slice::from_ref(&copy_region),
+            );
+
+            // Transition back to PRESENT_SRC (using legacy barrier)
+            let barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .image(image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+
+            device.end_command_buffer(cmd_buf)?;
+
+            let submit_info =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd_buf));
+            device.queue_submit(queue, std::slice::from_ref(&submit_info), vk::Fence::null())?;
+            device.queue_wait_idle(queue)?;
+        }
+
+        // Read back data
+        let data = unsafe {
+            let ptr = device.map_memory(
+                staging_buffer.memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            let slice = std::slice::from_raw_parts(ptr as *const u8, buffer_size as usize);
+            let mut vec = vec![0u8; buffer_size as usize];
+            vec.copy_from_slice(slice);
+            device.unmap_memory(staging_buffer.memory);
+            vec
+        };
+
+        // Vulkan swapchain images are in SRGB format; we need to flip vertically
+        let mut flipped = vec![0u8; buffer_size as usize];
+        for y in 0..extent.height {
+            let src_row =
+                &data[(y * extent.width * 4) as usize..((y + 1) * extent.width * 4) as usize];
+            let dst_row = &mut flipped[((extent.height - 1 - y) * extent.width * 4) as usize
+                ..((extent.height - y) * extent.width * 4) as usize];
+            dst_row.copy_from_slice(src_row);
+        }
+
+        // Save PNG
+        let mut file = std::fs::File::create(&filename)
+            .with_context(|| format!("failed to create {filename}"))?;
+        let mut encoder = png::Encoder::new(&mut file, extent.width, extent.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .context("failed to write PNG header")?;
+        writer
+            .write_image_data(&flipped)
+            .context("failed to write PNG image data")?;
+
+        eprintln!("[engine-vulkan] screenshot saved to {filename}");
+        Ok(())
     }
 
     fn upload_per_frame_data(&mut self, frame: &FrameData<'_>, _frame_index: usize) -> Result<()> {
@@ -1349,6 +1518,7 @@ impl VulkanRenderer {
             self.ssao_render_pass.handle,
             self.swapchain_render_pass.handle,
             self.frame.swapchain.handle,
+            self.vsync,
         )?;
 
         self.sync
@@ -1432,6 +1602,18 @@ impl Renderer for VulkanRenderer {
 
     fn extent(&self) -> (u32, u32) {
         VulkanRenderer::extent(self)
+    }
+
+    fn set_vsync(&mut self, vsync: VsyncMode) -> Result<()> {
+        VulkanRenderer::set_vsync(self, vsync)
+    }
+
+    fn vsync(&self) -> VsyncMode {
+        self.vsync
+    }
+
+    fn screenshot(&mut self) -> Result<()> {
+        VulkanRenderer::screenshot(self)
     }
 }
 

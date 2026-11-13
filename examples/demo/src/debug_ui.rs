@@ -38,25 +38,25 @@ impl DebugMenu {
             buttons: [
                 Button {
                     x: 20.0,
-                    y: 195.0,
+                    y: 200.0,
                     width: 90.0,
-                    height: 26.0,
+                    height: 32.0,
                     view: DebugView::Lit,
                     label: "LIT",
                 },
                 Button {
                     x: 120.0,
-                    y: 195.0,
+                    y: 200.0,
                     width: 90.0,
-                    height: 26.0,
+                    height: 32.0,
                     view: DebugView::Normals,
-                    label: "NORMAL",
+                    label: "NORMALS",
                 },
                 Button {
                     x: 220.0,
-                    y: 195.0,
+                    y: 200.0,
                     width: 90.0,
-                    height: 26.0,
+                    height: 32.0,
                     view: DebugView::Depth,
                     label: "DEPTH",
                 },
@@ -109,69 +109,124 @@ impl DebugMenu {
             }
         }
 
-        let panel_width = 340.0;
-        let panel_height = 320.0;
+        let panel_width = 360.0;
+        let panel_height = 360.0;
+        let x = 10.0;
+        let y = 10.0;
+
+        // Panel background with subtle border
+        ui.rect(x, y, panel_width, panel_height, [0.025, 0.03, 0.04, 0.95]);
+        ui.rect(x, y, panel_width, 2.0, [1.0, 0.55, 0.1, 1.0]);
         ui.rect(
-            10.0,
-            10.0,
+            x,
+            y + panel_height - 1.0,
             panel_width,
-            panel_height,
-            [0.04, 0.04, 0.05, 0.92],
+            1.0,
+            [0.2, 0.2, 0.25, 1.0],
         );
-        ui.rect(10.0, 10.0, panel_width, 2.0, [1.0, 0.55, 0.1, 1.0]);
+
+        // Title bar
+        ui.rect(x, y + 2.0, panel_width, 36.0, [0.05, 0.06, 0.08, 0.95]);
+        ui.text("SOLDATIK3D DEBUG", 20.0, 16.0, 2.0, [1.0, 0.75, 0.2, 1.0]);
+        ui.text(
+            &format!("CAM: {}", camera_name),
+            20.0,
+            34.0,
+            1.1,
+            [0.7, 0.75, 0.8, 1.0],
+        );
 
         let white = [1.0, 1.0, 1.0, 1.0];
-        let dim = [0.65, 0.65, 0.65, 1.0];
+        let dim = [0.6, 0.65, 0.7, 1.0];
         let accent = [1.0, 0.75, 0.2, 1.0];
+        let _green = [0.3, 0.85, 0.4, 1.0];
+        let _red = [0.9, 0.4, 0.3, 1.0];
 
-        ui.text("SOLDATIK3D DEBUG", 20.0, 20.0, 2.0, accent);
-        ui.rect(20.0, 40.0, panel_width - 20.0, 1.0, [0.65, 0.45, 0.15, 1.0]);
+        // Performance section
+        ui.rect(20.0, 55.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("PERFORMANCE", 20.0, 60.0, 1.2, accent);
 
-        let lines = [
-            format!("FPS: {fps:.0}"),
-            format!("FRAME: {frame_ms:.2} MS"),
-            format!("VERTS: {}", stats.vertices),
-            format!("TRIS: {}", stats.triangles),
-            format!("DRAWS: {}", stats.draw_calls),
-            format!("CAMERA: {camera_name}"),
+        let perf_lines = [
+            format!("FPS:      {:>6.0}", fps),
+            format!("Frame:    {:>6.2} ms", frame_ms),
+            format!("Verts:    {:>8}", stats.vertices),
+            format!("Tris:     {:>8}", stats.triangles),
+            format!("Draws:    {:>6}", stats.draw_calls),
+        ];
+        for (index, line) in perf_lines.iter().enumerate() {
+            ui.text(line, 20.0, 80.0 + index as f32 * 18.0, 1.3, white);
+        }
+
+        // Camera section
+        ui.rect(20.0, 175.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("CAMERA", 20.0, 180.0, 1.2, accent);
+
+        let cam_lines = [
+            format!("Name:  {}", camera_name),
             format!(
-                "POS: {:.1} {:.1} {:.1}",
+                "Pos:   {:>7.1} {:>7.1} {:>7.1}",
                 camera_position.x, camera_position.y, camera_position.z
             ),
         ];
-        for (index, line) in lines.iter().enumerate() {
-            ui.text(line, 20.0, 48.0 + index as f32 * 18.0, 1.5, white);
+        for (index, line) in cam_lines.iter().enumerate() {
+            ui.text(line, 20.0, 200.0 + index as f32 * 18.0, 1.3, white);
         }
 
-        ui.rect(
-            20.0,
-            175.0,
-            panel_width - 20.0,
-            1.0,
-            [0.35, 0.35, 0.35, 1.0],
-        );
+        // Debug view section
+        ui.rect(20.0, 245.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("DEBUG VIEW", 20.0, 250.0, 1.2, accent);
+
         for button in &self.buttons {
             let active = button.view == self.view;
-            let color = if active {
-                [0.15, 0.65, 0.25, 1.0]
+            let (bg_color, text_color) = if active {
+                ([0.15, 0.4, 0.2, 1.0], [0.6, 1.0, 0.7, 1.0])
             } else {
-                [0.22, 0.22, 0.24, 1.0]
+                ([0.08, 0.1, 0.14, 1.0], [0.8, 0.85, 0.9, 1.0])
             };
-            ui.rect(button.x, button.y, button.width, button.height, color);
-            ui.text(button.label, button.x + 8.0, button.y + 7.0, 1.4, white);
+            ui.rect(button.x, button.y, button.width, button.height, bg_color);
+            if active {
+                ui.rect(button.x, button.y, 3.0, button.height, accent);
+            }
+            ui.text(
+                button.label,
+                button.x + 8.0,
+                button.y + 8.0,
+                1.3,
+                text_color,
+            );
         }
 
-        ui.rect(
-            20.0,
-            232.0,
-            panel_width - 20.0,
-            1.0,
-            [0.35, 0.35, 0.35, 1.0],
-        );
-        ui.text("TAB: FREE MOUSE", 20.0, 244.0, 1.4, dim);
-        ui.text("WASD SPACE CTRL", 20.0, 259.0, 1.4, dim);
-        ui.text("SHIFT: SPRINT   F: FLY", 20.0, 274.0, 1.4, dim);
-        ui.text("F2 F3 F4: VIEW   ESC: QUIT", 20.0, 289.0, 1.4, dim);
-        ui.text("F1 / `: CONSOLE  CAMERA.*", 20.0, 304.0, 1.4, accent);
+        // Controls section
+        ui.rect(20.0, 285.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("CONTROLS", 20.0, 290.0, 1.2, accent);
+
+        let controls = [
+            ("WASD", "Move"),
+            ("Space", "Jump / Up (fly)"),
+            ("Ctrl", "Down (fly)"),
+            ("Shift", "Sprint"),
+            ("F", "Toggle Fly"),
+            ("Mouse", "Look"),
+            ("Tab", "Free Mouse"),
+            ("F1 / `", "Console"),
+            ("F2", "View: LIT"),
+            ("F3", "View: NORMALS"),
+            ("F4", "View: DEPTH"),
+            ("Esc", "Quit / Close Menu"),
+        ];
+
+        let col1_x = 20.0;
+        let col2_x = 180.0;
+        for (i, (key, desc)) in controls.iter().enumerate() {
+            let col = if i < 6 { col1_x } else { col2_x };
+            let row = if i < 6 { i } else { i - 6 };
+            let y_pos = 310.0 + row as f32 * 16.0;
+            ui.text(key, col, y_pos, 1.1, dim);
+            ui.text(desc, col + 55.0, y_pos, 1.1, white);
+        }
+
+        // VSync status
+        ui.rect(20.0, 420.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("F5: VSync Toggle", 20.0, 425.0, 1.2, accent);
     }
 }

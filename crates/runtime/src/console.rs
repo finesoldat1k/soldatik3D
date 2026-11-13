@@ -22,6 +22,8 @@ pub struct Console {
     history: Vec<String>,
     history_index: usize,
     pending: Option<String>,
+    /// Tab completion state: (prefix, matches, current_match_index)
+    completion: Option<(String, Vec<String>, usize)>,
 }
 
 impl Default for Console {
@@ -39,6 +41,7 @@ impl Console {
             history: Vec::new(),
             history_index: 0,
             pending: None,
+            completion: None,
         };
         console.print("Soldatik3D console ready. Type `help` for commands.");
         console.print(
@@ -113,6 +116,33 @@ impl Console {
         };
     }
 
+    /// Starts or advances tab completion using the provided registry.
+    pub fn complete(&mut self, registry: &crate::commands::CommandRegistry) {
+        if self.completion.is_none() {
+            // First tab: find matches for current input
+            let prefix = self.input.trim();
+            let matches: Vec<String> = registry
+                .complete(prefix)
+                .into_iter()
+                .map(|s| s.to_owned())
+                .collect();
+            if matches.is_empty() {
+                return;
+            }
+            self.completion = Some((prefix.to_owned(), matches, 0));
+        }
+        // Cycle to next match
+        if let Some((_prefix, matches, index)) = &mut self.completion {
+            *index = (*index + 1) % matches.len();
+            self.input = format!("{} ", matches[*index]);
+        }
+    }
+
+    /// Resets completion state (call on non-tab key press).
+    pub fn reset_completion(&mut self) {
+        self.completion = None;
+    }
+
     pub fn print(&mut self, text: impl Into<String>) {
         self.messages.push(Line {
             text: text.into(),
@@ -157,11 +187,12 @@ impl Console {
         let panel_width = (ui.width() - 24.0).min(780.0);
         let line_height = 16.0;
         let message_count = self.messages.len().min(VISIBLE_MESSAGES);
-        let panel_height = 34.0 + message_count as f32 * line_height + 34.0;
+        let panel_height = 34.0 + message_count as f32 * line_height + 50.0;
         let x = 12.0;
         let y = 12.0;
 
-        ui.rect(x, y, panel_width, panel_height, [0.025, 0.03, 0.04, 0.94]);
+        // Background with subtle gradient effect
+        ui.rect(x, y, panel_width, panel_height, [0.02, 0.025, 0.035, 0.96]);
         ui.rect(x, y, panel_width, 2.0, [1.0, 0.55, 0.1, 1.0]);
         ui.rect(
             x,
@@ -171,50 +202,106 @@ impl Console {
             [0.25, 0.25, 0.3, 1.0],
         );
 
+        // Title bar
+        ui.rect(x, y + 2.0, panel_width, 28.0, [0.05, 0.06, 0.08, 0.9]);
         ui.text(
             "SOLDATIK3D CONSOLE",
             x + 10.0,
-            y + 9.0,
+            y + 7.0,
             1.4,
             [1.0, 0.75, 0.2, 1.0],
         );
         ui.text(
-            "F1 CLOSE",
-            x + panel_width - 74.0,
-            y + 10.0,
-            1.2,
-            [0.6, 0.6, 0.65, 1.0],
+            "F1 CLOSE  |  TAB autocomplete  |  ↑↓ history",
+            x + panel_width - 300.0,
+            y + 9.0,
+            1.0,
+            [0.6, 0.65, 0.7, 1.0],
         );
 
         let start = self.messages.len().saturating_sub(VISIBLE_MESSAGES);
         for (row, line) in self.messages[start..].iter().enumerate() {
             let color = if line.error {
-                [1.0, 0.45, 0.4, 1.0]
+                [1.0, 0.4, 0.35, 1.0]
             } else if line.text.starts_with('>') {
-                [1.0, 0.8, 0.45, 1.0]
+                [1.0, 0.85, 0.4, 1.0]
             } else {
-                [0.82, 0.84, 0.88, 1.0]
+                [0.85, 0.88, 0.92, 1.0]
             };
-            let text = fit(&line.text, panel_width - 20.0, 1.25);
+            let text = fit(&line.text, panel_width - 20.0, 1.2);
             ui.text(
                 &text,
                 x + 10.0,
-                y + 30.0 + row as f32 * line_height,
-                1.25,
+                y + 34.0 + row as f32 * line_height,
+                1.2,
                 color,
             );
         }
 
-        let input_y = y + panel_height - 26.0;
+        // Autocomplete suggestions
+        let messages_y = y + 34.0 + message_count as f32 * line_height;
+        if let Some((_prefix, matches, index)) = &self.completion {
+            let suggestion_y = messages_y + 4.0;
+            let suggestion_count = matches.len().min(6);
+            ui.rect(
+                x + 8.0,
+                suggestion_y,
+                panel_width - 16.0,
+                suggestion_count as f32 * 18.0 + 8.0,
+                [0.08, 0.1, 0.14, 0.95],
+            );
+            for (i, m) in matches.iter().take(suggestion_count).enumerate() {
+                let is_selected = i == *index;
+                let color = if is_selected {
+                    [1.0, 0.9, 0.3, 1.0]
+                } else {
+                    [0.7, 0.8, 0.9, 1.0]
+                };
+                let bg_color = if is_selected {
+                    [0.15, 0.18, 0.25, 1.0]
+                } else {
+                    [0.0, 0.0, 0.0, 0.0]
+                };
+                ui.rect(
+                    x + 10.0,
+                    suggestion_y + 4.0 + i as f32 * 18.0,
+                    panel_width - 20.0,
+                    18.0,
+                    bg_color,
+                );
+                ui.text(
+                    m,
+                    x + 14.0,
+                    suggestion_y + 5.0 + i as f32 * 18.0,
+                    1.1,
+                    color,
+                );
+            }
+        }
+
+        let input_y = y + panel_height - 40.0;
         ui.rect(
             x + 8.0,
             input_y - 3.0,
             panel_width - 16.0,
-            20.0,
+            28.0,
             [0.06, 0.07, 0.09, 1.0],
         );
+        ui.rect(
+            x + 10.0,
+            input_y + 2.0,
+            panel_width - 20.0,
+            22.0,
+            [0.03, 0.04, 0.06, 1.0],
+        );
         let prompt = format!("> {}_", self.input);
-        ui.text(&prompt, x + 12.0, input_y, 1.3, [0.95, 0.97, 1.0, 1.0]);
+        ui.text(
+            &prompt,
+            x + 16.0,
+            input_y + 6.0,
+            1.3,
+            [0.95, 0.97, 1.0, 1.0],
+        );
     }
 }
 

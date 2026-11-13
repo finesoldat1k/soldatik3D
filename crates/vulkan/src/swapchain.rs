@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use ash::{khr, vk};
+use render::VsyncMode;
 
 use crate::context::VulkanContext;
 
@@ -42,6 +43,7 @@ impl Swapchain {
         size: (u32, u32),
         preferred_format: Option<vk::Format>,
         old_swapchain: vk::SwapchainKHR,
+        vsync: VsyncMode,
     ) -> Result<Self> {
         let support = query_support(
             context.physical_device,
@@ -49,7 +51,7 @@ impl Swapchain {
             context.surface,
         )?;
         let surface_format = choose_surface_format(&support.formats, preferred_format);
-        let present_mode = choose_present_mode(&support.present_modes);
+        let present_mode = choose_present_mode(&support.present_modes, vsync);
         let extent = choose_extent(&support.capabilities, size);
 
         let mut image_count = support.capabilities.min_image_count + 1;
@@ -189,11 +191,33 @@ pub fn choose_surface_format(
     formats[0]
 }
 
-fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    if modes.contains(&vk::PresentModeKHR::MAILBOX) {
-        vk::PresentModeKHR::MAILBOX
-    } else {
-        vk::PresentModeKHR::FIFO
+fn choose_present_mode(modes: &[vk::PresentModeKHR], vsync: VsyncMode) -> vk::PresentModeKHR {
+    match vsync {
+        VsyncMode::Off => {
+            if modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+                vk::PresentModeKHR::IMMEDIATE
+            } else if modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                vk::PresentModeKHR::MAILBOX
+            } else {
+                vk::PresentModeKHR::FIFO
+            }
+        }
+        VsyncMode::On => vk::PresentModeKHR::FIFO,
+        VsyncMode::Adaptive => {
+            if modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
+                vk::PresentModeKHR::FIFO_RELAXED
+            } else {
+                vk::PresentModeKHR::FIFO
+            }
+        }
+        VsyncMode::Mailbox => {
+            if modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                vk::PresentModeKHR::MAILBOX
+            } else {
+                vk::PresentModeKHR::FIFO
+            }
+        }
+        _ => vk::PresentModeKHR::FIFO,
     }
 }
 

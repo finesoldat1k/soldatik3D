@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use assets::{font_atlas_rgba8, generate_environment_cubemap};
 use glam::{Mat4, Vec2, Vec4};
 use glow::HasContext;
-use render::{BackendKind, FrameData, RenderStats, Renderer};
+use render::{BackendKind, FrameData, RenderStats, Renderer, VsyncMode};
 use scene::{Aabb, Light, LightUniformBuffer, PrimaryLight, Scene, Vertex};
 use ui::UiVertex;
 
@@ -304,13 +304,17 @@ pub struct OpenGlRenderer {
 
     stats: RenderStats,
     size: (u32, u32),
+    vsync: VsyncMode,
 }
 
 impl OpenGlRenderer {
-    pub fn new(surface: render::WindowSurface, scene: &Scene) -> Result<Self> {
+    pub fn new(surface: render::WindowSurface, scene: &Scene, vsync: VsyncMode) -> Result<Self> {
         let size = surface.size();
         let context = GlContext::new(surface)?;
         let gl = context.glow();
+
+        // Apply vsync immediately
+        let _ = context.set_vsync(vsync);
 
         unsafe { gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1) };
 
@@ -503,6 +507,7 @@ impl OpenGlRenderer {
             prefiltered,
             stats,
             size,
+            vsync,
         })
     }
 
@@ -768,6 +773,15 @@ impl OpenGlRenderer {
     pub fn extent(&self) -> (u32, u32) {
         self.size
     }
+
+    pub fn vsync(&self) -> VsyncMode {
+        self.vsync
+    }
+
+    pub fn set_vsync(&mut self, vsync: VsyncMode) -> Result<()> {
+        self.vsync = vsync;
+        self.context.set_vsync(vsync)
+    }
 }
 
 impl Renderer for OpenGlRenderer {
@@ -793,6 +807,59 @@ impl Renderer for OpenGlRenderer {
 
     fn extent(&self) -> (u32, u32) {
         OpenGlRenderer::extent(self)
+    }
+
+    fn set_vsync(&mut self, vsync: VsyncMode) -> Result<()> {
+        OpenGlRenderer::set_vsync(self, vsync)
+    }
+
+    fn vsync(&self) -> VsyncMode {
+        self.vsync
+    }
+
+    fn screenshot(&mut self) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let filename = format!("screenshot_{timestamp}.png");
+        let gl = self.context.glow();
+        let (width, height) = self.extent();
+        let pixels = unsafe {
+            let mut data = vec![0u8; (width * height * 4) as usize];
+            gl.read_pixels(
+                0,
+                0,
+                width as i32,
+                height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut data)),
+            );
+            data
+        };
+        // Flip vertically because OpenGL origin is bottom-left
+        let mut flipped = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            let src_row = &pixels[(y * width * 4) as usize..((y + 1) * width * 4) as usize];
+            let dst_row = &mut flipped
+                [((height - 1 - y) * width * 4) as usize..((height - y) * width * 4) as usize];
+            dst_row.copy_from_slice(src_row);
+        }
+        let mut file = std::fs::File::create(&filename)
+            .with_context(|| format!("failed to create {filename}"))?;
+        let mut encoder = png::Encoder::new(&mut file, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .context("failed to write PNG header")?;
+        writer
+            .write_image_data(&flipped)
+            .context("failed to write PNG image data")?;
+        eprintln!("[engine-opengl] screenshot saved to {filename}");
+        Ok(())
     }
 }
 

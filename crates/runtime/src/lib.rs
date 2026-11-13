@@ -29,14 +29,15 @@
 
 mod app;
 mod backend;
+mod commands;
 mod console;
 pub mod game;
 
 pub use assets::{TextureData, font_atlas_rgba8, generate_environment_cubemap};
 pub use game::{CommandContext, Game, GameConfig, UpdateContext};
-pub use platform::{Input, winit};
+pub use platform::{Input, InputMap, winit};
 pub use render::{
-    BackendKind, CameraFrame, DebugView, FrameData, RenderStats, Renderer, WindowSurface,
+    BackendKind, CameraFrame, DebugView, FrameData, RenderStats, Renderer, VsyncMode, WindowSurface,
 };
 pub use scene::glam;
 pub use scene::prelude::*;

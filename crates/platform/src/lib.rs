@@ -9,7 +9,7 @@
 pub mod input;
 pub mod window;
 
-pub use input::Input;
+pub use input::{Input, InputMap};
 pub use window::PlatformWindow;
 
 /// Re-exported so games can use key codes, mouse buttons and window types

@@ -14,7 +14,7 @@ use glutin::context::{
 };
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
-use render::WindowSurface as EngineSurface;
+use render::{VsyncMode, WindowSurface as EngineSurface};
 
 /// A current OpenGL context plus the loaded function table.
 pub struct GlContext {
@@ -96,6 +96,22 @@ impl GlContext {
         self.surface
             .swap_buffers(&self.context)
             .context("failed to present the OpenGL framebuffer")
+    }
+
+    pub fn set_vsync(&self, vsync: VsyncMode) -> Result<()> {
+        use glutin::surface::SwapInterval;
+        use std::num::NonZeroU32;
+
+        let interval = match vsync {
+            VsyncMode::Off => SwapInterval::DontWait,
+            VsyncMode::On => SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+            VsyncMode::Adaptive => SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+            VsyncMode::Mailbox => SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+            _ => SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
+        };
+
+        let _ = self.surface.set_swap_interval(&self.context, interval);
+        Ok(())
     }
 }
 

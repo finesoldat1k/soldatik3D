@@ -17,3 +17,4 @@ glutin = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 raw-window-handle = { workspace = true }
+png = "0.17"

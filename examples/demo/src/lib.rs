@@ -7,7 +7,7 @@
 
 pub mod debug_ui;
 pub mod demo;
-mod player;
+pub mod player;
 pub mod world;
 
 pub use demo::DemoGame;

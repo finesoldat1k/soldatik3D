@@ -9,8 +9,10 @@ use anyhow::Result;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 mod frame;
+mod vsync;
 
 pub use frame::{CameraFrame, DebugView, FrameData, RenderStats};
+pub use vsync::VsyncMode;
 
 /// Graphics API used to present the engine's frames.
 ///
@@ -117,4 +119,20 @@ pub trait Renderer {
 
     /// Current framebuffer size in physical pixels.
     fn extent(&self) -> (u32, u32);
+
+    /// Capture the current frame to a PNG file. Default implementation returns
+    /// an error; backends that support readback should override.
+    fn screenshot(&mut self) -> Result<()> {
+        anyhow::bail!("screenshot not supported by this backend")
+    }
+
+    /// Sets the vertical sync mode. Default implementation does nothing.
+    fn set_vsync(&mut self, _vsync: VsyncMode) -> Result<()> {
+        Ok(())
+    }
+
+    /// Returns the current vertical sync mode. Default returns `VsyncMode::On`.
+    fn vsync(&self) -> VsyncMode {
+        VsyncMode::On
+    }
 }

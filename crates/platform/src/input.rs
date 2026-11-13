@@ -1,7 +1,34 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::Vec2;
 use winit::keyboard::KeyCode;
+
+/// Maps logical action names to key codes.
+///
+/// Games define their actions and default bindings here. The engine provides
+/// methods to query actions instead of raw key codes, enabling rebindable controls.
+#[derive(Default, Clone)]
+pub struct InputMap {
+    bindings: HashMap<String, Vec<KeyCode>>,
+}
+
+impl InputMap {
+    /// Creates an empty input map.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Binds an action to one or more key codes.
+    pub fn bind(mut self, action: &str, keys: &[KeyCode]) -> Self {
+        self.bindings.insert(action.to_owned(), keys.to_vec());
+        self
+    }
+
+    /// Returns all keys bound to an action.
+    pub fn keys_for(&self, action: &str) -> Option<&[KeyCode]> {
+        self.bindings.get(action).map(|v| v.as_slice())
+    }
+}
 
 /// Aggregated input state for one frame.
 ///
@@ -19,6 +46,8 @@ pub struct Input {
     cursor_captured: bool,
     suppressed_motion_frames: u8,
     text: String,
+    /// Active action bindings for this frame.
+    action_map: InputMap,
 }
 
 impl Input {
@@ -28,6 +57,20 @@ impl Input {
 
     pub fn key_pressed(&self, key: KeyCode) -> bool {
         self.pressed.contains(&key)
+    }
+
+    /// Returns true if any key bound to `action` is currently held down.
+    pub fn action_down(&self, action: &str) -> bool {
+        self.action_map
+            .keys_for(action)
+            .is_some_and(|keys| keys.iter().any(|key| self.keys.contains(key)))
+    }
+
+    /// Returns true if any key bound to `action` was pressed this frame.
+    pub fn action_pressed(&self, action: &str) -> bool {
+        self.action_map
+            .keys_for(action)
+            .is_some_and(|keys| keys.iter().any(|key| self.pressed.contains(key)))
     }
 
     /// Raw mouse motion accumulated during this frame. Only non-zero while the
@@ -100,6 +143,10 @@ impl Input {
             self.suppressed_motion_frames = 2;
             self.mouse_delta = Vec2::ZERO;
         }
+    }
+
+    pub fn set_action_map(&mut self, map: InputMap) {
+        self.action_map = map;
     }
 
     pub fn begin_frame(&mut self) {

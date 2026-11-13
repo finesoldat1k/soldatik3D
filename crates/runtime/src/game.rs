@@ -1,5 +1,5 @@
-use platform::Input;
-use render::{BackendKind, DebugView, RenderStats};
+use platform::{Input, InputMap};
+use render::{BackendKind, DebugView, RenderStats, VsyncMode};
 use scene::World;
 use ui::UiDrawList;
 
@@ -14,6 +14,8 @@ pub struct GameConfig {
     /// Graphics backend used to present frames. `SOLDATIK3D_BACKEND` overrides
     /// the default at startup (`vulkan` or `opengl`).
     pub backend: BackendKind,
+    /// Vertical sync mode. `SOLDATIK3D_VSYNC` overrides the default at startup.
+    pub vsync: VsyncMode,
 }
 
 impl Default for GameConfig {
@@ -24,6 +26,7 @@ impl Default for GameConfig {
             height: 720,
             cursor_locked: true,
             backend: BackendKind::from_env().unwrap_or_default(),
+            vsync: VsyncMode::from_env().unwrap_or_default(),
         }
     }
 }
@@ -47,6 +50,11 @@ impl GameConfig {
 
     pub fn with_cursor_locked(mut self, locked: bool) -> Self {
         self.cursor_locked = locked;
+        self
+    }
+
+    pub fn with_vsync(mut self, vsync: VsyncMode) -> Self {
+        self.vsync = vsync;
         self
     }
 }
@@ -103,6 +111,14 @@ pub trait Game {
 
     /// Advances gameplay by one frame.
     fn update(&mut self, ctx: &mut UpdateContext<'_>);
+
+    /// Returns the action map for input bindings. Default returns an empty map.
+    ///
+    /// Games should override this to provide their action bindings. The map is
+    /// applied to the input state once at startup.
+    fn input_map(&self) -> InputMap {
+        InputMap::new()
+    }
 
     /// Descriptions of game-specific console commands, shown by `help`.
     ///

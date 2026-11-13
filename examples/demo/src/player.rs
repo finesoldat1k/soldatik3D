@@ -2,7 +2,7 @@
 
 use runtime::glam::Vec3;
 use runtime::winit::keyboard::KeyCode;
-use runtime::{Aabb, Camera, Input};
+use runtime::{Aabb, Camera, Input, InputMap};
 
 const PLAYER_HEIGHT: f32 = 1.7;
 const PLAYER_RADIUS: f32 = 0.5;
@@ -18,6 +18,12 @@ pub struct Player {
     current_fov: f32,
     bob_time: f32,
     bob_intensity: f32,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Player {
@@ -88,9 +94,28 @@ impl Player {
         self.velocity.z = 0.0;
         self.bob_intensity = 0.0;
     }
+}
 
+/// Default action bindings for the demo player.
+pub fn default_input_map() -> InputMap {
+    InputMap::new()
+        .bind("move_forward", &[KeyCode::KeyW])
+        .bind("move_backward", &[KeyCode::KeyS])
+        .bind("move_left", &[KeyCode::KeyA])
+        .bind("move_right", &[KeyCode::KeyD])
+        .bind("jump", &[KeyCode::Space])
+        .bind("crouch", &[KeyCode::ControlLeft])
+        .bind("sprint", &[KeyCode::ShiftLeft])
+        .bind("fly_toggle", &[KeyCode::KeyF])
+        .bind("camera_rot_left", &[KeyCode::ArrowLeft])
+        .bind("camera_rot_right", &[KeyCode::ArrowRight])
+        .bind("camera_rot_up", &[KeyCode::ArrowUp])
+        .bind("camera_rot_down", &[KeyCode::ArrowDown])
+}
+
+impl Player {
     pub fn update(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
-        if input.key_pressed(KeyCode::KeyF) {
+        if input.action_pressed("fly_toggle") {
             self.is_flying = !self.is_flying;
             self.velocity = Vec3::ZERO;
         }
@@ -104,16 +129,16 @@ impl Player {
             .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
 
         let rotation_speed = 2.0 * dt;
-        if input.key_down(KeyCode::ArrowLeft) {
+        if input.action_down("camera_rot_left") {
             self.camera.yaw -= rotation_speed;
         }
-        if input.key_down(KeyCode::ArrowRight) {
+        if input.action_down("camera_rot_right") {
             self.camera.yaw += rotation_speed;
         }
-        if input.key_down(KeyCode::ArrowUp) {
+        if input.action_down("camera_rot_up") {
             self.camera.pitch += rotation_speed;
         }
-        if input.key_down(KeyCode::ArrowDown) {
+        if input.action_down("camera_rot_down") {
             self.camera.pitch -= rotation_speed;
         }
         self.camera.pitch = self
@@ -121,7 +146,7 @@ impl Player {
             .pitch
             .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
 
-        let sprinting = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
+        let sprinting = input.action_down("sprint");
         let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
 
         let max_speed = if self.is_flying {
@@ -136,16 +161,16 @@ impl Player {
         let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
 
         let mut wish_direction = Vec3::ZERO;
-        if input.key_down(KeyCode::KeyW) {
+        if input.action_down("move_forward") {
             wish_direction += forward;
         }
-        if input.key_down(KeyCode::KeyS) {
+        if input.action_down("move_backward") {
             wish_direction -= forward;
         }
-        if input.key_down(KeyCode::KeyA) {
+        if input.action_down("move_left") {
             wish_direction -= right;
         }
-        if input.key_down(KeyCode::KeyD) {
+        if input.action_down("move_right") {
             wish_direction += right;
         }
         if wish_direction.length_squared() > 0.0 {
@@ -158,10 +183,10 @@ impl Player {
             self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
 
-            if input.key_down(KeyCode::Space) {
+            if input.action_down("jump") {
                 self.velocity.y += 60.0 * dt;
             }
-            if input.key_down(KeyCode::ControlLeft) {
+            if input.action_down("crouch") {
                 self.velocity.y -= 60.0 * dt;
             }
             self.velocity.y *= (1.0 - 5.0 * dt).max(0.0);
@@ -176,7 +201,7 @@ impl Player {
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
             self.velocity.y -= GRAVITY * dt;
 
-            if self.on_ground && input.key_down(KeyCode::Space) {
+            if self.on_ground && input.action_down("jump") {
                 self.velocity.y = JUMP_FORCE;
                 self.on_ground = false;
             }

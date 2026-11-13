@@ -13,6 +13,7 @@ use scene::{CameraId, World};
 use ui::UiDrawList;
 
 use crate::backend;
+use crate::commands::{BuiltinCommandContext, CommandRegistry, CommandResult};
 use crate::console::Console;
 use crate::game::{CommandContext, Game, GameConfig, UpdateContext};
 
@@ -37,6 +38,7 @@ pub(crate) struct App<G: Game> {
     console_restore_capture: bool,
     startup_commands: Vec<String>,
     open_console_on_start: bool,
+    command_registry: CommandRegistry,
 }
 
 impl<G: Game> App<G> {
@@ -72,6 +74,7 @@ impl<G: Game> App<G> {
                 .unwrap_or_default(),
             open_console_on_start: std::env::var("SOLDATIK3D_CONSOLE")
                 .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on")),
+            command_registry: crate::commands::create_default_registry(),
         }
     }
 
@@ -147,7 +150,12 @@ impl<G: Game> App<G> {
         };
 
         let world = self.game.create_world();
-        match backend::create_renderer(self.config.backend, surface, world.scene()) {
+        match backend::create_renderer(
+            self.config.backend,
+            surface,
+            world.scene(),
+            self.config.vsync,
+        ) {
             Ok(renderer) => {
                 self.renderer = Some(renderer);
                 self.world = Some(world);
@@ -173,6 +181,12 @@ impl<G: Game> App<G> {
                 if self.open_console_on_start {
                     self.set_console_open(true);
                 }
+                // Apply vsync setting
+                if let Some(renderer) = &mut self.renderer {
+                    let _ = renderer.set_vsync(self.config.vsync);
+                }
+                // Apply game-defined input action map
+                self.input.set_action_map(self.game.input_map());
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -280,54 +294,48 @@ impl<G: Game> App<G> {
         let name = parts.next().unwrap_or_default();
         let args: Vec<&str> = parts.collect();
 
-        match name {
-            "" => {}
-            "help" => self.print_help(),
-            "clear" => self.console.clear(),
-            "quit" | "exit" => {
-                self.console.print("shutting down");
-                self.exit_requested = true;
-            }
-            "backend" => {
-                let name = self
-                    .renderer
-                    .as_ref()
-                    .map(|renderer| renderer.backend().name())
-                    .unwrap_or("none");
-                self.console.print(format!(
-                    "backend: {name} (SOLDATIK3D_BACKEND=vulkan|opengl)"
-                ));
-            }
-            "camera.list" => self.command_camera_list(),
-            "camera.select" => self.command_camera_select(&args),
-            "camera.next" => self.command_camera_step(true),
-            "camera.prev" | "camera.previous" => self.command_camera_step(false),
-            "camera.spawn" => self.command_camera_spawn(&args),
-            "camera.remove" => self.command_camera_remove(&args),
-            "camera.rename" => self.command_camera_rename(&args),
-            "camera.info" => self.command_camera_info(),
-            "camera.set" => self.command_camera_set(&args),
-            _ => self.command_game(name, &args),
+        if name.is_empty() {
+            return;
         }
+
+        // Try built-in commands first
+        if let Some(command) = self.command_registry.get(name) {
+            let mut ctx = BuiltinCommandContext::new(
+                self.world.as_mut().expect("world exists during command"),
+                &mut self.console,
+                self.renderer.as_mut(),
+                &args,
+                &mut self.exit_requested,
+            );
+            let result = command.execute(&mut ctx);
+            match result {
+                crate::commands::CommandResult::Ok(Some(msg)) => self.console.print(msg),
+                crate::commands::CommandResult::Ok(None) => {}
+                crate::commands::CommandResult::Err(msg) => self.console.error(msg),
+            }
+            return;
+        }
+
+        // Delegate to game
+        self.command_game(name, &args);
     }
 
     fn print_help(&mut self) {
         self.console.print("Soldatik3D console commands:");
-        self.console.print("  help | clear | quit | backend");
-        self.console
-            .print("  camera.list | camera.next | camera.prev");
-        self.console.print("  camera.select <name|id>");
-        self.console
-            .print("  camera.spawn <name> [x y z] [yaw] [pitch]");
-        self.console
-            .print("  camera.remove <name|id> | camera.rename <name>");
-        self.console
-            .print("  camera.info | camera.set x y z [yaw] [pitch]");
+        // Print built-in commands from registry
+        for command in self.command_registry.all() {
+            self.console.print(format!(
+                "  {:<24} {}",
+                command.name(),
+                command.description()
+            ));
+        }
+        // Print game commands
         let extra = self.game.command_help();
         if !extra.is_empty() {
             self.console.print("game commands:");
             for (name, description) in extra {
-                self.console.print(format!("  {name:<18} {description}"));
+                self.console.print(format!("  {name:<24} {description}"));
             }
         }
     }
@@ -635,18 +643,43 @@ impl<G: Game> ApplicationHandler for App<G> {
 
                 if self.console.is_open() {
                     match code {
-                        KeyCode::Escape => self.set_console_open(false),
-                        KeyCode::Enter => self.console.submit(),
-                        KeyCode::Backspace => self.console.backspace(),
-                        KeyCode::ArrowUp => self.console.history_previous(),
-                        KeyCode::ArrowDown => self.console.history_next(),
-                        _ => {}
+                        KeyCode::Escape => {
+                            self.set_console_open(false);
+                            self.console.reset_completion();
+                        }
+                        KeyCode::Enter => {
+                            self.console.submit();
+                            self.console.reset_completion();
+                        }
+                        KeyCode::Backspace => {
+                            self.console.backspace();
+                            self.console.reset_completion();
+                        }
+                        KeyCode::ArrowUp => {
+                            self.console.history_previous();
+                            self.console.reset_completion();
+                        }
+                        KeyCode::ArrowDown => {
+                            self.console.history_next();
+                            self.console.reset_completion();
+                        }
+                        KeyCode::Tab => {
+                            self.console.complete(&self.command_registry);
+                        }
+                        _ => {
+                            self.console.reset_completion();
+                        }
                     }
                     return;
                 }
 
                 match code {
                     KeyCode::Tab => self.toggle_cursor_capture(),
+                    KeyCode::F12 => {
+                        if let Some(renderer) = &mut self.renderer {
+                            let _ = renderer.screenshot();
+                        }
+                    }
                     KeyCode::Escape => {
                         if self.input.cursor_captured() {
                             self.toggle_cursor_capture();
@@ -684,7 +717,7 @@ impl<G: Game> ApplicationHandler for App<G> {
     }
 }
 
-fn resolve_camera(world: &World, token: &str) -> Option<CameraId> {
+pub(crate) fn resolve_camera(world: &World, token: &str) -> Option<CameraId> {
     if let Some(camera) = world.cameras().get_by_name(token) {
         return Some(camera.id);
     }
@@ -694,7 +727,7 @@ fn resolve_camera(world: &World, token: &str) -> Option<CameraId> {
     world.cameras().get(id).map(|_| id)
 }
 
-fn parse_vec3(values: &[&str]) -> Option<Vec3> {
+pub(crate) fn parse_vec3(values: &[&str]) -> Option<Vec3> {
     Some(Vec3::new(
         values.first()?.parse().ok()?,
         values.get(1)?.parse().ok()?,
