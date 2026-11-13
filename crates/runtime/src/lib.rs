@@ -35,7 +35,9 @@ pub mod game;
 
 pub use assets::{TextureData, font_atlas_rgba8, generate_environment_cubemap};
 pub use game::{CommandContext, Game, GameConfig, UpdateContext};
-pub use platform::{Input, InputMap, winit};
+pub use platform::{
+    Input, InputMap, PlatformCapabilities, TargetOS, TargetArch, WindowHints, winit,
+};
 pub use render::{
     BackendKind, CameraFrame, DebugView, FrameData, RenderStats, Renderer, VsyncMode, WindowSurface,
 };
