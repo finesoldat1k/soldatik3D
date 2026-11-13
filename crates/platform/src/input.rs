@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use engine_core::glam::Vec2;
+use glam::Vec2;
 use winit::keyboard::KeyCode;
 
 /// Aggregated input state for one frame.
@@ -18,6 +18,7 @@ pub struct Input {
     primary_clicked: bool,
     cursor_captured: bool,
     suppressed_motion_frames: u8,
+    text: String,
 }
 
 impl Input {
@@ -50,6 +51,16 @@ impl Input {
 
     pub fn cursor_captured(&self) -> bool {
         self.cursor_captured
+    }
+
+    /// Text typed during this frame, as reported by the platform. Used by the
+    /// engine console; gameplay code can ignore it.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn push_text(&mut self, text: &str) {
+        self.text.push_str(text);
     }
 
     pub fn set_key(&mut self, key: KeyCode, pressed: bool) {
@@ -96,6 +107,7 @@ impl Input {
         self.mouse_delta = Vec2::ZERO;
         self.scroll_delta = 0.0;
         self.primary_clicked = false;
+        self.text.clear();
         self.suppressed_motion_frames = self.suppressed_motion_frames.saturating_sub(1);
     }
 }

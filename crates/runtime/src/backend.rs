@@ -1,0 +1,32 @@
+//! Backend factory of the engine runtime.
+//!
+//! This is the only place in the facade that knows concrete backend crates.
+//! Adding OpenGL later means adding one arm here and one enum variant in
+//! `render::BackendKind`; games keep using [`render::Renderer`].
+
+use anyhow::Result;
+use render::{BackendKind, Renderer, WindowSurface};
+use scene::Scene;
+
+pub(crate) fn create_renderer(
+    kind: BackendKind,
+    surface: WindowSurface,
+    scene: &Scene,
+) -> Result<Box<dyn Renderer>> {
+    match kind {
+        #[cfg(feature = "vulkan")]
+        BackendKind::Vulkan => Ok(Box::new(vulkan::VulkanRenderer::new(surface, scene)?)),
+        #[cfg(feature = "opengl")]
+        BackendKind::OpenGl => Ok(Box::new(opengl::OpenGlRenderer::new(surface, scene)?)),
+        // Reached when the selected backend is not compiled into this build.
+        // When every variant is enabled the arm is unreachable, hence the allow.
+        #[allow(unreachable_patterns)]
+        backend => {
+            let _ = (surface, scene);
+            anyhow::bail!(
+                "the `{}` backend is not available in this build; enable its engine feature",
+                backend.name()
+            )
+        }
+    }
+}

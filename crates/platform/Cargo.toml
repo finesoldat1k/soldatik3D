@@ -1,0 +1,13 @@
+[package]
+name = "platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Window, event and input integration for the Soldatik3D engine"
+
+[dependencies]
+render = { workspace = true }
+glam = { workspace = true }
+anyhow = { workspace = true }
+winit = { workspace = true }

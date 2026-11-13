@@ -1,0 +1,11 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Immediate-mode 2D draw list of the Soldatik3D engine"
+
+[dependencies]
+assets = { path = "../assets" }
+bytemuck = { workspace = true }

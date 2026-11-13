@@ -1,35 +1,10 @@
-/// RGBA8 pixel data used to build a GPU texture.
-#[derive(Clone, Debug)]
-pub struct TextureData {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
-}
-
-impl TextureData {
-    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        assert_eq!(
-            pixels.len(),
-            (width * height * 4) as usize,
-            "RGBA texture data has an invalid size"
-        );
-        Self {
-            width,
-            height,
-            pixels,
-        }
-    }
-
-    pub fn white() -> Self {
-        Self {
-            width: 1,
-            height: 1,
-            pixels: vec![255, 255, 255, 255],
-        }
-    }
-}
+use assets::TextureData;
 
 /// The material currently supported by the forward PBR pass.
+///
+/// A single material is shared by all meshes of a [`crate::Scene`]. Per-mesh
+/// materials are a planned extension; the backend contract already keeps the
+/// material separate from the geometry so it can grow without breaking games.
 #[derive(Clone, Debug)]
 pub struct Material {
     pub albedo: TextureData,

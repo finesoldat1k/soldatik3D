@@ -1,0 +1,10 @@
+[package]
+name = "assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CPU-side textures, font atlas and environment data of the Soldatik3D engine"
+
+[dependencies]
+glam = { workspace = true }

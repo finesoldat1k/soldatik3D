@@ -1,0 +1,19 @@
+[package]
+name = "vulkan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vulkan backend for the Soldatik3D engine"
+
+[dependencies]
+scene = { workspace = true }
+assets = { workspace = true }
+ui = { workspace = true }
+render = { workspace = true }
+anyhow = { workspace = true }
+ash = { workspace = true }
+ash-window = { workspace = true }
+glam = { workspace = true }
+shaderc = { workspace = true }
+bytemuck = { workspace = true }

@@ -1,8 +1,16 @@
 //! Immediate-mode 2D drawing commands consumed by the engine UI pass.
+//!
+//! Coordinates are physical pixels with the origin in the top-left corner.
+//! The draw list is backend-neutral: it produces vertices, and each renderer
+//! uploads them with its own pipeline. Font atlas data lives in the `assets`
+//! crate so text and glyph packing stay independent from draw commands.
 
-const FONT_ATLAS_SIZE: u32 = 128;
-const FONT_CELL_SIZE: u32 = 8;
-const GLYPH_COLUMNS: u32 = 16;
+use assets::{
+    FONT_ATLAS_SIZE, FONT_CELL_SIZE, FONT_GLYPH_COLUMNS, FONT_GLYPH_HEIGHT, FONT_GLYPH_WIDTH,
+};
+
+/// Horizontal distance between two glyph origins in the built-in font.
+const GLYPH_ADVANCE: f32 = FONT_GLYPH_WIDTH as f32 + 1.0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -100,20 +108,23 @@ impl UiDrawList {
     }
 
     pub fn text(&mut self, text: &str, mut x: f32, y: f32, scale: f32, color: [f32; 4]) {
-        let cell_uv = 1.0 / GLYPH_COLUMNS as f32;
+        let atlas_size = FONT_ATLAS_SIZE as f32;
         for ch in text.chars() {
             let index = ch as u32;
             if !(32..=126).contains(&index) {
                 continue;
             }
-            let cx = (index % GLYPH_COLUMNS) as f32;
-            let cy = (index / GLYPH_COLUMNS) as f32;
-            let u0 = cx * cell_uv;
-            let v0 = cy * cell_uv;
-            let u1 = u0 + cell_uv;
-            let v1 = v0 + cell_uv;
-            let glyph_width = 5.0 * scale;
-            let glyph_height = 7.0 * scale;
+            let cell_x = (index % FONT_GLYPH_COLUMNS) * FONT_CELL_SIZE;
+            let cell_y = (index / FONT_GLYPH_COLUMNS) * FONT_CELL_SIZE;
+            // Only the 5x7 glyph area of each cell holds ink; sampling the
+            // whole 8x8 cell would add transparent padding and make text look
+            // spaced out and fuzzy.
+            let u0 = cell_x as f32 / atlas_size;
+            let v0 = cell_y as f32 / atlas_size;
+            let u1 = (cell_x + FONT_GLYPH_WIDTH) as f32 / atlas_size;
+            let v1 = (cell_y + FONT_GLYPH_HEIGHT) as f32 / atlas_size;
+            let glyph_width = FONT_GLYPH_WIDTH as f32 * scale;
+            let glyph_height = FONT_GLYPH_HEIGHT as f32 * scale;
 
             let x0 = self.to_ndc_x(x);
             let y0 = self.to_ndc_y(y);
@@ -152,7 +163,7 @@ impl UiDrawList {
                     uv: [u0, v1],
                 },
             ]);
-            x += 6.0 * scale;
+            x += GLYPH_ADVANCE * scale;
         }
     }
 
@@ -160,7 +171,7 @@ impl UiDrawList {
         text.chars()
             .filter(|c| (32..=126).contains(&(*c as u32)))
             .count() as f32
-            * 6.0
+            * GLYPH_ADVANCE
             * scale
     }
 
@@ -176,160 +187,5 @@ impl UiDrawList {
 
     fn to_ndc_y(&self, y: f32) -> f32 {
         (y / self.height) * 2.0 - 1.0
-    }
-}
-
-/// 128x128 RGBA font atlas. Glyphs live in 8x8 cells, characters 32..126 are
-/// packed in a 16x8 grid. The glyph itself is a 5x7 bitmap.
-pub fn font_atlas_rgba8() -> Vec<u8> {
-    let mut pixels = vec![0u8; (FONT_ATLAS_SIZE * FONT_ATLAS_SIZE * 4) as usize];
-    let size = FONT_ATLAS_SIZE;
-
-    for code in 32u32..127 {
-        let glyph = glyph_rows(code as u8 as char);
-        let cell_x = (code % GLYPH_COLUMNS) * FONT_CELL_SIZE;
-        let cell_y = (code / GLYPH_COLUMNS) * FONT_CELL_SIZE;
-
-        for row in 0..7u32 {
-            for col in 0..5u32 {
-                if (glyph[row as usize] & (1 << (4 - col))) != 0 {
-                    let px = cell_x + col;
-                    let py = cell_y + row;
-                    let idx = ((py * size + px) * 4) as usize;
-                    pixels[idx..idx + 4].copy_from_slice(&[255, 255, 255, 255]);
-                }
-            }
-        }
-    }
-
-    pixels
-}
-
-fn glyph_rows(ch: char) -> [u8; 7] {
-    match ch {
-        '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
-        ],
-        '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
-        ],
-        '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
-        ],
-        '5' => [
-            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
-        ],
-        '6' => [
-            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
-        ],
-        '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
-        ],
-        '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
-        ],
-        '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
-        ],
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
-        ],
-        'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'G' => [
-            0b01111, 0b10000, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111,
-        ],
-        'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'I' => [
-            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        'J' => [
-            0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100,
-        ],
-        'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
-        ],
-        'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
-        ],
-        'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
-        ],
-        'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
-        ],
-        'X' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
-        ],
-        'Y' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
-        ],
-        ':' => [
-            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000,
-        ],
-        '.' => [
-            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100,
-        ],
-        '-' => [
-            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
-        ],
-        '/' => [
-            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
-        ],
-        ' ' => [0; 7],
-        _ => [
-            0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111,
-        ],
     }
 }

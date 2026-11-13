@@ -1,0 +1,12 @@
+[package]
+name = "scene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Camera, world, geometry, light and material types of the Soldatik3D engine"
+
+[dependencies]
+assets = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }

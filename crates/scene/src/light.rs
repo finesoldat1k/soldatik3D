@@ -72,12 +72,64 @@ impl Default for PrimaryLight {
 }
 
 impl PrimaryLight {
-    /// View-projection used by the shadow map. The Vulkan Y-flip is applied by
-    /// the renderer, so this stays backend-agnostic.
+    /// View-projection used by the shadow map. This is the engine's
+    /// OpenGL-convention matrix ([−1, 1] depth); Vulkan converts it at the
+    /// backend boundary.
     pub fn view_projection(&self) -> Mat4 {
         let view = Mat4::look_at_rh(self.position, self.target, self.up);
         let h = self.shadow.ortho_half_extent.max(0.01);
         let projection = Mat4::orthographic_rh(-h, h, -h, h, self.shadow.near, self.shadow.far);
         projection * view
+    }
+}
+
+/// std140-compatible light buffer shared by all backends.
+///
+/// The layout is deliberately two separate `vec4` arrays, mirroring the GLSL
+/// `LightBuffer` block. Interleaving position and color in one array of
+/// structs produces colored corruption because std140 pads struct members to
+/// 16 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct LightUniformBuffer {
+    pub position_radius: [[f32; 4]; MAX_LIGHTS],
+    pub color_intensity: [[f32; 4]; MAX_LIGHTS],
+}
+
+impl Default for LightUniformBuffer {
+    fn default() -> Self {
+        Self {
+            position_radius: [[0.0; 4]; MAX_LIGHTS],
+            color_intensity: [[0.0; 4]; MAX_LIGHTS],
+        }
+    }
+}
+
+impl LightUniformBuffer {
+    /// Packs the nearest `MAX_LIGHTS` lights around `camera_position`.
+    ///
+    /// Selecting the closest lights keeps the forward pass relevant in large
+    /// levels without a light grid. Both backends call this helper, so the
+    /// selection policy is centralized.
+    pub fn from_nearest(lights: &[Light], camera_position: Vec3) -> Self {
+        let mut buffer = Self::default();
+        let mut nearest: Vec<(f32, usize)> = lights
+            .iter()
+            .enumerate()
+            .map(|(index, light)| (light.position.distance_squared(camera_position), index))
+            .collect();
+        nearest.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (slot, (_, index)) in nearest.iter().take(MAX_LIGHTS).enumerate() {
+            let light = lights[*index];
+            buffer.position_radius[slot] = [
+                light.position.x,
+                light.position.y,
+                light.position.z,
+                light.radius,
+            ];
+            buffer.color_intensity[slot] =
+                [light.color.x, light.color.y, light.color.z, light.intensity];
+        }
+        buffer
     }
 }

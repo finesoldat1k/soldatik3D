@@ -30,6 +30,35 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// A camera at `position` looking down −Z with the default lens.
+    pub fn at(position: Vec3) -> Self {
+        Self {
+            position,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_yaw_degrees(mut self, degrees: f32) -> Self {
+        self.yaw = degrees.to_radians();
+        self
+    }
+
+    pub fn with_pitch_degrees(mut self, degrees: f32) -> Self {
+        self.pitch = degrees.to_radians();
+        self
+    }
+
+    pub fn with_fov_degrees(mut self, degrees: f32) -> Self {
+        self.fov_y_degrees = degrees;
+        self
+    }
+
+    pub fn with_range(mut self, near: f32, far: f32) -> Self {
+        self.z_near = near;
+        self.z_far = far;
+        self
+    }
+
     pub fn forward(&self) -> Vec3 {
         Vec3::new(
             self.yaw.cos() * self.pitch.cos(),

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use engine_render::WindowSurface;
+use render::WindowSurface;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
