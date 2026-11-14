@@ -14,7 +14,7 @@ A game project template for the [Soldatik3D](https://github.com/finesoldat1k/sol
 ### Desktop Development
 
 ```bash
-# Clone this template (or use `cargo generate` if published)
+# Clone this template (or use `s3d new` if you have the engine)
 git clone https://github.com/finesoldat1k/soldatik3d-template my_game
 cd my_game
 
@@ -27,6 +27,28 @@ SOLDATIK3D_BACKEND=opengl cargo run
 
 # Release build
 cargo run --release
+```
+
+### Using s3d (Soldatik3D CLI)
+
+If you have the engine built locally or installed, use `s3d` for project management:
+
+```bash
+# Create a new project from template
+s3d new my_game
+cd my_game
+
+# Build for all platforms
+s3d build --target all --release
+
+# Build Android APK
+s3d apk arm64-v8a --release
+
+# Export distributable packages
+s3d export --platforms linux,windows,android --out-dir dist
+
+# Validate project configuration
+s3d check --target android
 ```
 
 ### Android Development
