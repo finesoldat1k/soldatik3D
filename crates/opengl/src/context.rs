@@ -1,16 +1,21 @@
 //! OpenGL display, context and window-surface bootstrap.
 //!
 //! The engine runtime already owns the winit window. This module attaches a
-//! glutin (EGL/GLX/WGL/CGL) OpenGL 3.3 core context to that existing native
-//! handle and exposes a loaded `glow` function table.
+//! glutin (EGL/GLX/WGL) context to that existing native handle and exposes a
+//! loaded `glow` function table.
+//!
+//! Desktop targets request OpenGL 3.3 core. Android requests OpenGL ES 3.0,
+//! which is the API exposed by EGL on Android devices; the shader sources are
+//! translated to `#version 300 es` by the shader loader.
 
 use std::num::NonZeroU32;
 
 use anyhow::{Context, Result};
 use glutin::config::ConfigTemplateBuilder;
+#[cfg(not(target_os = "android"))]
+use glutin::context::GlProfile;
 use glutin::context::{
-    ContextApi, ContextAttributesBuilder, GlProfile, NotCurrentGlContext, PossiblyCurrentContext,
-    Version,
+    ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
 };
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
@@ -44,12 +49,17 @@ impl GlContext {
             .next()
             .context("no OpenGL framebuffer configuration supports a window surface")?;
 
+        #[cfg(target_os = "android")]
+        let context_attributes = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::Gles(Some(Version::new(3, 0))))
+            .build(Some(surface.window));
+        #[cfg(not(target_os = "android"))]
         let context_attributes = ContextAttributesBuilder::new()
             .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
             .with_profile(GlProfile::Core)
             .build(Some(surface.window));
         let not_current = unsafe { display.create_context(&config, &context_attributes) }
-            .context("failed to create an OpenGL 3.3 core context")?;
+            .context("failed to create a desktop OpenGL 3.3 / OpenGL ES 3.0 context")?;
 
         let width = NonZeroU32::new(surface.width.max(1)).expect("non-zero width");
         let height = NonZeroU32::new(surface.height.max(1)).expect("non-zero height");

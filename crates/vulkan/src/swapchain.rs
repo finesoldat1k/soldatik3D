@@ -35,6 +35,9 @@ pub struct Swapchain {
     pub extent: vk::Extent2D,
     pub images: Vec<vk::Image>,
     pub views: Vec<vk::ImageView>,
+    /// Whether the swapchain was created with `TRANSFER_SRC` usage, which is
+    /// required by the screenshot readback.
+    pub transfer_src: bool,
 }
 
 impl Swapchain {
@@ -67,6 +70,19 @@ impl Swapchain {
                 (vk::SharingMode::EXCLUSIVE, &[])
             };
 
+        // Screenshots copy the acquired swapchain image to a host buffer, so
+        // the image must be created with TRANSFER_SRC usage. The flag is only
+        // requested when the surface reports it; `capture_image` refuses to
+        // capture otherwise instead of producing validation errors.
+        let transfer_src = support
+            .capabilities
+            .supported_usage_flags
+            .contains(vk::ImageUsageFlags::TRANSFER_SRC);
+        let mut image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+        if transfer_src {
+            image_usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+        }
+
         let create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(context.surface)
             .min_image_count(image_count)
@@ -74,7 +90,7 @@ impl Swapchain {
             .image_color_space(surface_format.color_space)
             .image_extent(extent)
             .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_usage(image_usage)
             .image_sharing_mode(sharing_mode)
             .queue_family_indices(queue_family_indices)
             .pre_transform(support.capabilities.current_transform)
@@ -111,6 +127,7 @@ impl Swapchain {
             extent,
             images,
             views,
+            transfer_src,
         })
     }
 

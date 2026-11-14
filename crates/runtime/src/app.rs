@@ -13,7 +13,7 @@ use scene::{CameraId, World};
 use ui::UiDrawList;
 
 use crate::backend;
-use crate::commands::{BuiltinCommandContext, CommandRegistry, CommandResult};
+use crate::commands::{BuiltinCommandContext, CommandRegistry};
 use crate::console::Console;
 use crate::game::{CommandContext, Game, GameConfig, UpdateContext};
 
@@ -298,6 +298,11 @@ impl<G: Game> App<G> {
             return;
         }
 
+        if name == "help" {
+            self.print_help();
+            return;
+        }
+
         // Try built-in commands first
         if let Some(command) = self.command_registry.get(name) {
             let mut ctx = BuiltinCommandContext::new(
@@ -338,209 +343,6 @@ impl<G: Game> App<G> {
                 self.console.print(format!("  {name:<24} {description}"));
             }
         }
-    }
-
-    fn command_camera_list(&mut self) {
-        let Some(world) = self.world.as_ref() else {
-            return;
-        };
-        let active = world.active_camera_id();
-        let lines: Vec<String> = world
-            .cameras()
-            .iter()
-            .map(|camera| {
-                let marker = if Some(camera.id) == active { "*" } else { " " };
-                format!(
-                    "{marker} {:<16} {}  pos ({:.1}, {:.1}, {:.1})",
-                    camera.name,
-                    camera.id,
-                    camera.camera.position.x,
-                    camera.camera.position.y,
-                    camera.camera.position.z
-                )
-            })
-            .collect();
-        self.console.print(format!("{} camera(s):", lines.len()));
-        for line in lines {
-            self.console.print(format!("  {line}"));
-        }
-    }
-
-    fn command_camera_select(&mut self, args: &[&str]) {
-        let Some(token) = args.first() else {
-            self.console.error("usage: camera.select <name|id>");
-            return;
-        };
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let selected = if world.select_camera_name(token) {
-            true
-        } else {
-            resolve_camera(world, token).is_some_and(|id| world.select_camera(id))
-        };
-        if selected {
-            let name = world.active_camera_name().to_owned();
-            self.console.print(format!("active camera: {name}"));
-        } else {
-            self.console.error(format!("unknown camera: {token}"));
-        }
-    }
-
-    fn command_camera_step(&mut self, forward: bool) {
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let id = if forward {
-            world.select_next_camera()
-        } else {
-            world.select_previous_camera()
-        };
-        match id {
-            Some(id) => self.console.print(format!(
-                "active camera: {} ({id})",
-                world.active_camera_name()
-            )),
-            None => self.console.error("no cameras"),
-        }
-    }
-
-    fn command_camera_spawn(&mut self, args: &[&str]) {
-        let Some(name) = args.first() else {
-            self.console
-                .error("usage: camera.spawn <name> [x y z] [yaw] [pitch]");
-            return;
-        };
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let mut camera = world.active_camera();
-        if args.len() > 1 {
-            if args.len() < 4 {
-                self.console
-                    .error("camera.spawn: provide all of x y z, or none");
-                return;
-            }
-            let Some(position) = parse_vec3(&args[1..4]) else {
-                self.console.error("camera.spawn: invalid position");
-                return;
-            };
-            camera.position = position;
-        }
-        if let Some(yaw) = args.get(4) {
-            match yaw.parse::<f32>() {
-                Ok(value) => camera.yaw = value.to_radians(),
-                Err(_) => {
-                    self.console.error("camera.spawn: invalid yaw");
-                    return;
-                }
-            }
-        }
-        if let Some(pitch) = args.get(5) {
-            match pitch.parse::<f32>() {
-                Ok(value) => camera.pitch = value.to_radians(),
-                Err(_) => {
-                    self.console.error("camera.spawn: invalid pitch");
-                    return;
-                }
-            }
-        }
-        let id = world.spawn_camera(*name, camera);
-        let resolved = world
-            .cameras()
-            .get(id)
-            .map(|camera| camera.name.clone())
-            .unwrap_or_else(|| (*name).to_owned());
-        self.console
-            .print(format!("spawned camera {resolved} ({id})"));
-    }
-
-    fn command_camera_remove(&mut self, args: &[&str]) {
-        let Some(token) = args.first() else {
-            self.console.error("usage: camera.remove <name|id>");
-            return;
-        };
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let Some(id) = resolve_camera(world, token) else {
-            self.console.error(format!("unknown camera: {token}"));
-            return;
-        };
-        match world.remove_camera(id) {
-            Some(removed) => self
-                .console
-                .print(format!("removed camera {} ({id})", removed.name)),
-            None => self
-                .console
-                .error("cannot remove the last remaining camera"),
-        }
-    }
-
-    fn command_camera_rename(&mut self, args: &[&str]) {
-        let Some(name) = args.first() else {
-            self.console.error("usage: camera.rename <name>");
-            return;
-        };
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        match world.cameras_mut().rename_active(*name) {
-            Some(resolved) => self.console.print(format!("active camera: {resolved}")),
-            None => self.console.error("no active camera"),
-        }
-    }
-
-    fn command_camera_info(&mut self) {
-        let Some(world) = self.world.as_ref() else {
-            return;
-        };
-        let Some(camera) = world.active_camera_ref() else {
-            self.console.error("no active camera");
-            return;
-        };
-        let camera = camera.camera;
-        self.console.print(format!(
-            "{}: pos ({:.2}, {:.2}, {:.2}) yaw {:.1}° pitch {:.1}° fov {:.1}° range {:.2}..{:.1}",
-            world.active_camera_name(),
-            camera.position.x,
-            camera.position.y,
-            camera.position.z,
-            camera.yaw.to_degrees(),
-            camera.pitch.to_degrees(),
-            camera.fov_y_degrees,
-            camera.z_near,
-            camera.z_far
-        ));
-    }
-
-    fn command_camera_set(&mut self, args: &[&str]) {
-        if args.len() < 3 {
-            self.console.error("usage: camera.set x y z [yaw] [pitch]");
-            return;
-        }
-        let Some(position) = parse_vec3(&args[0..3]) else {
-            self.console.error("camera.set: invalid position");
-            return;
-        };
-        let yaw = args.get(3).and_then(|value| value.parse::<f32>().ok());
-        let pitch = args.get(4).and_then(|value| value.parse::<f32>().ok());
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let Some(camera) = world.active_camera_mut() else {
-            self.console.error("no active camera");
-            return;
-        };
-        camera.camera.position = position;
-        if let Some(yaw) = yaw {
-            camera.camera.yaw = yaw.to_radians();
-        }
-        if let Some(pitch) = pitch {
-            camera.camera.pitch = pitch.to_radians();
-        }
-        let name = camera.name.clone();
-        self.console.print(format!("moved camera {name}"));
     }
 
     fn command_game(&mut self, name: &str, args: &[&str]) {

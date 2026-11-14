@@ -15,7 +15,7 @@ pub(crate) fn create_renderer(
     vsync: VsyncMode,
 ) -> Result<Box<dyn Renderer>> {
     match kind {
-        #[cfg(feature = "vulkan")]
+        #[cfg(all(feature = "vulkan", not(target_os = "android")))]
         BackendKind::Vulkan => Ok(Box::new(vulkan::VulkanRenderer::new(
             surface, scene, vsync,
         )?)),

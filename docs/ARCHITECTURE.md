@@ -33,7 +33,7 @@
 | `scene` | Мир, камеры, геометрия, свет, материалы | `World`, `Camera`, `CameraRig`, `CameraId`, `Scene`, `Mesh`, `Vertex`, `Aabb`, `Material`, `Light`, `LightUniformBuffer` |
 | `ui` | Backend-neutral список вершин UI | `UiDrawList`, `UiVertex` |
 | `render` | Контракт рендерера и общие типы кадра | `Renderer`, `BackendKind`, `WindowSurface`, `CameraFrame`, `FrameData`, `DebugView`, `RenderStats` |
-| `platform` | Окно, ввод и native handles | `PlatformWindow`, `Input` |
+| `platform` | Окно, ввод, native handles и определение платформы | `PlatformWindow`, `Input`, `TargetOS`, `TargetArch`, `PlatformCapabilities`, `WindowHints` |
 | `vulkan` | Vulkan 1.2, пайплайны, шейдеры, GPU-ресурсы | `VulkanRenderer` |
 | `opengl` | OpenGL 3.3 core, FBO-пайплайн, GPU-ресурсы | `OpenGlRenderer` |
 | `runtime` | Фасад, event loop, консоль, фабрика бэкендов | `run`, `Game`, `GameConfig`, `UpdateContext`, `CommandContext` |
@@ -150,6 +150,9 @@ pub trait Renderer {
     fn wait_idle(&self) -> anyhow::Result<()>;
     fn stats(&self) -> RenderStats;
     fn extent(&self) -> (u32, u32);
+    fn screenshot(&mut self) -> anyhow::Result<()>;
+    fn set_vsync(&mut self, vsync: VsyncMode) -> anyhow::Result<()>;
+    fn vsync(&self) -> VsyncMode;
 }
 ```
 
@@ -160,6 +163,16 @@ pub trait Renderer {
 - `WindowSurface` содержит `RawWindowHandle`, `RawDisplayHandle` и размер.
   Это единственная точка соприкосновения платформы и графического API.
 - `FrameData` содержит `CameraFrame`, вершины UI и `DebugView`.
+- `VsyncMode` — `On`, `Off`, `Adaptive`, `Mailbox` (`#[non_exhaustive]`).
+  Vulkan выбирает `FIFO`/`IMMEDIATE`/`FIFO_RELAXED`/`MAILBOX`, OpenGL —
+  `SwapInterval::Wait(1)`/`DontWait`. `GameConfig::vsync` и
+  `SOLDATIK3D_VSYNC` задают стартовый режим, `Renderer::set_vsync`
+  переключает его на ходу.
+- `screenshot` запрашивает захват и сохраняет PNG в следующем кадре. Vulkan
+  копирует уже приобретённое swapchain-изображение после ожидания frame
+  fence и до `present`; OpenGL читает default framebuffer через
+  `glReadPixels` до `swap_buffers`. Это гарантирует, что PNG содержит
+  отрисованный кадр, а не пустую/старую поверхность.
 
 `BackendKind` помечен `#[non_exhaustive]`; имена `vulkan`/`opengl` (и короткие
 `vk`/`gl`) разбирает `BackendKind::from_name`, переменную окружения —
@@ -200,7 +213,13 @@ UI overlay → swapchain/default framebuffer (UNORM)
 - `shaderc` компилирует встроенные GLSL-шейдеры при запуске из
   `crates/vulkan/shaders/`.
 - Swapchain — `B8G8R8A8_UNORM` (fallback на RGBA/SRGB), tone mapping и гамма
-  выполняются в composite-шейдере.
+  выполняются в composite-шейдере. Если surface поддерживает
+  `TRANSFER_SRC`, swapchain создаётся с этим usage для скриншотов; иначе
+  команда `screenshot` возвращает понятную ошибку.
+- Скриншот копирует приобретённое изображение в host-visible буфер,
+  дожидаясь frame fence до `present`. Строки Vulkan-изображения уже идут
+  сверху вниз, поэтому вертикальный flip не нужен; выполняется только
+  swizzle BGRA → RGBA.
 - `MAX_FRAMES_IN_FLIGHT = 1`: один набор sync-объектов и command buffer'ов.
 - Shadow и основной command buffer отправляются одним `queue_submit`; барьер
   в конце shadow-буфера делает карту теней видимой fragment-шейдеру.
@@ -217,26 +236,34 @@ UI overlay → swapchain/default framebuffer (UNORM)
 
 ### OpenGL
 
-- `glutin` создаёт контекст OpenGL 3.3 core на **существующем** raw handle
-  winit-окна; `glow` предоставляет функции GL.
-- На Linux используется EGL с fallback на GLX, на Windows — EGL/WGL, на
-  macOS — CGL.
+- `glutin` создаёт контекст на **существующем** raw handle winit-окна;
+  `glow` предоставляет функции GL.
+- На Linux используется EGL с fallback на GLX, на Windows — WGL/EGL, на
+  Android — EGL/OpenGL ES 3.0. macOS не поддерживается.
 - Пайплайн зеркалит Vulkan через FBO:
   - shadow map — depth texture + depth-only FBO;
-  - HDR — `RGBA16F` color + depth texture;
+  - HDR — `RGBA16F` color + depth texture; на Android при отсутствии
+    `EXT_color_buffer_half_float`/`EXT_color_buffer_float` используется
+    `RGBA8`;
   - SSAO — half-res `R8` FBO и два ping-pong FBO для blur;
   - bloom — half-res HDR FBO и два ping-pong FBO для blur;
   - composite — default framebuffer;
   - UI — отдельный VAO/VBO и шейдер.
 - При resize все size-dependent FBO и текстуры пересоздаются.
 - Шейдеры — GLSL 330 core, встроены через `include_str!` и компилируются
-  драйвером при старте.
+  драйвером при старте. На Android загрузчик заменяет `#version` на
+  `#version 300 es` и добавляет precision-квалификаторы; на desktop исходники
+  передаются без изменений.
 - Проекционные матрицы используются напрямую: `Camera::projection_matrix`
   уже возвращает OpenGL-совместимый clip space. UI-шейдер инвертирует Y, так
   как NDC OpenGL направлен вверх; атлас шрифта при этом по V **не**
   переворачивается.
 - Шрифт загружается с `NEAREST`-фильтрацией, чтобы bitmap-глифы оставались
   чёткими.
+- Скриншот (`screenshot`) запрашивается в консоли и выполняется в следующем
+  кадре до `swap_buffers`: `glReadPixels` читает default framebuffer, затем
+  строки переворачиваются из нижне-левой ориентации GL в верхне-левую
+  ориентацию PNG.
 
 ---
 
@@ -254,8 +281,10 @@ UI overlay → swapchain/default framebuffer (UNORM)
 использует их для UV. Сэмплируется только область глифа 5×7 внутри ячейки,
 поэтому текст не «расползается» из-за прозрачных полей.
 
-Встроенный шрифт содержит заглавные буквы и ASCII-пунктуацию; строчные буквы
-отображаются заглавными. Этого достаточно для консоли и отладочного UI.
+Встроенный шрифт содержит заглавные и строчные буквы `a-z`, цифры и
+ASCII-пунктуацию; область глифа — 5×7 внутри ячейки 8×8. Этого достаточно
+для консоли и отладочного UI. Кириллица и другие алфавиты требуют отдельного
+атласа.
 
 `UiDrawList` хранит только вершины (`position`, `color`, `uv`). Виджеты,
 панели и кнопки строятся поверх него в игре или в консоли рантайма. Каждый
@@ -266,15 +295,18 @@ UI overlay → swapchain/default framebuffer (UNORM)
 ## 8. Консоль и команды
 
 Консоль — часть рантайма, а не игры. Она владеет текстом, историей, курсором
-и отрисовкой, но не знает игровых команд. Встроенные команды обрабатывает
-`App`, неизвестные — делегируются в `Game::command`.
+и отрисовкой, но не знает игровых команд. Встроенные команды собраны в
+`CommandRegistry` с описаниями и tab-автодополнением; неизвестные имена
+делегируются в `Game::command`.
 
 Встроенные команды:
 
-- `help`, `clear`, `quit` / `exit`, `backend`;
+- `help`, `clear`, `quit` / `exit`, `backend`, `screenshot`;
 - `camera.list`, `camera.select`, `camera.next`, `camera.prev`;
 - `camera.spawn`, `camera.remove`, `camera.rename`, `camera.info`,
-  `camera.set`.
+  `camera.set`;
+- `vsync.on`, `vsync.off`, `vsync.adaptive`, `vsync.mailbox`,
+  `vsync.toggle`, `vsync.current`.
 
 Игра описывает свои команды в `Game::command_help` и обрабатывает их в
 `Game::command`, получая `CommandContext { name, args, world }`. Возврат
@@ -282,8 +314,9 @@ UI overlay → swapchain/default framebuffer (UNORM)
 command».
 
 Консоль открывается по `F1` или `` ` ``, освобождает курсор и забирает
-текстовый ввод. `Enter` выполняет строку, `↑`/`↓` листают историю, `Esc`
-закрывает консоль и возвращает захват курсора, если он был включён.
+текстовый ввод. `Enter` выполняет строку, `↑`/`↓` листают историю, `Tab`
+дополняет команду по префиксу, `Esc` закрывает консоль и возвращает захват
+курсора, если он был включён.
 
 ---
 
@@ -406,17 +439,47 @@ Fallback-arm в фабрике вернёт понятную ошибку, ес�
 - SSAO считается в половинном разрешении и умножает весь HDR-результат;
   разделение direct/ambient — запланировано.
 - UI — immediate-mode список вершин без виджет-фреймворка.
-- Встроенный шрифт только ASCII и без строчных форм; другие алфавиты требуют
+- Встроенный шрифт только ASCII (заглавные и строчные); кириллица требует
   своего атласа.
 - Видимого skybox нет: процедурное окружение используется только для IBL.
 
 **Диагностика**
 
 - `SOLDATIK3D_BACKEND=vulkan|opengl` — выбор бэкенда.
+- `SOLDATIK3D_VSYNC=on|off|adaptive|mailbox` — режим VSync.
 - `SOLDATIK3D_MAX_FRAMES=<n>` — корректно отрендерить `n` кадров и выйти
   (smoke-тест, в том числе для CI).
 - `SOLDATIK3D_COMMANDS="cmd1;cmd2"` — выполнить команды консоли после старта.
 - `SOLDATIK3D_CONSOLE=1` — открыть консоль при старте.
 - `SOLDATIK3D_DEBUG_VIEW=normals|depth` — стартовый режим отладки демо-игры.
+- `SOLDATIK3D_VALIDATION=1` — включить Vulkan validation layers.
+- `F12` или команда `screenshot` — сохранить PNG текущего кадра.
 - В debug-сборках Vulkan включается `VK_LAYER_KHRONOS_validation`, если слой
   установлен.
+
+---
+
+## 12. Платформы, CI и релизы
+
+Поддерживаются только Linux, Windows и Android. `platform` не содержит
+веток macOS/iOS/WebAssembly, а `TargetOS` ограничен этими тремя вариантами
+плюс `Unknown`.
+
+GitHub Actions:
+
+- `.github/workflows/ci.yml` — на каждый push и pull request собирает движок
+  (`runtime`) и игру (`demo`) **отдельными Cargo-командами**, запускает
+  clippy/тесты/rustdoc и упаковывает артефакты.
+- `.github/workflows/release.yml` — при публикации GitHub Release (включая
+  prerelease) собирает release-версии для Linux, Windows (MSVC) и Android
+  (arm64-v8a + armeabi-v7a) и прикрепляет архивы к релизу.
+
+Android собирается с OpenGL ES 3.0. Нативные зависимости Vulkan-крейта
+(`ash`, `shaderc`) находятся под `cfg(not(target_os = "android"))`, поэтому
+`cargo build --workspace` под Android не собирает `shaderc`. Ветка Vulkan в
+`runtime::backend` также включается только для не-Android целей. Демо
+собирается как `cdylib` (`libdemo.so`) и экспортирует `android_main` для
+`android.app.NativeActivity`; отдельного Android-исполняемого файла нет.
+
+Подробности о job'ах, NDK, локальной кросс-компиляции и переменных
+окружения — в [`docs/CI.md`](CI.md).

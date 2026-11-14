@@ -1,103 +1,27 @@
-# Cargo cross-compilation configuration for Soldatik3D
-# Optimized for Linux, Windows, Android - the three priority platforms
+# Cargo configuration for Soldatik3D.
+#
+# Cross-compilation is configured from the command line / CI environment so
+# that this file stays valid on every host. In particular, do not put
+# `[target.'cfg(...)'.dependencies]`, `[features]` or `[workspace]` sections
+# here: those belong to Cargo.toml files and are rejected by Cargo in config.
+#
+# Android linkers are supplied by CI and cross_build.sh through
+# CARGO_TARGET_<TRIPLE>_LINKER (see docs/CI.md).
 
-# Target-specific linker configuration
+[net]
+git-fetch-with-cli = true
 
-# Linux targets (primary development platform)
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-[target.x86_64-unknown-linux-musl]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-feature=+crt-static"]
-
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-
-[target.armv7-unknown-linux-gnueabihf]
-linker = "arm-linux-gnueabihf-gcc"
-
-# Windows targets (cross-compilation from Linux)
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-gcc-ar"
-runner = "wine64"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=lld",
-  "-C", "link-arg=-static",
-]
-
-[target.x86_64-pc-windows-msvc]
-# Requires Windows host or cross with llvm-mingw
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-# Android targets
-[target.aarch64-linux-android]
-linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-[target.armv7-linux-androideabi]
-linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
-ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-[target.x86_64-linux-android]
-linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
-ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-# Global optimization settings
+# Keep debug builds usable for a 3D engine while retaining symbols. The
+# workspace Cargo.toml already optimizes third-party dependencies; this also
+# optimizes the engine and demo crates themselves.
 [profile.dev]
 opt-level = 3
 debug = true
 split-debuginfo = "unpacked"
-rpath = false
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
 strip = "debuginfo"
 debug = false
-rpath = false
-
-[profile.release-lto]
-inherits = "release"
-lto = "fat"
-
-[profile.bench]
-inherits = "release"
-debug = true
-
-# Dependency overrides for cross-compilation
-[patch.crates-io]
-# Uncomment if you need to patch specific crates for cross-compilation
-# some-crate = { path = "../patched-some-crate" }
-
-# Target-specific dependencies (using cfg expressions)
-[target.'cfg(target_os = "android")'.dependencies]
-android-activity = { version = "0.6", features = ["api-level-29"] }
-ndk-glue = "0.9"
-ndk-context = "0.1"
-jni = "0.21"
-
-# Vulkan setup for all platforms
-[target.'cfg(target_os = "linux")'.dependencies]
-vulkan = { version = "1.0", features = ["xcb", "wayland", "xlib"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-vulkan = { version = "1.0", features = ["win32"] }
-
-# Cargo features
-[features]
-default = ["vulkan", "opengl"]
-vulkan = []
-opengl = []
-
-# Platform-specific features
-wayland = []
-x11 = []
-
-# Workspace-wide settings
-[workspace]
-resolver = "3"

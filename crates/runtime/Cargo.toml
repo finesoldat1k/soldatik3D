@@ -7,7 +7,10 @@ repository.workspace = true
 description = "Public runtime facade of the Soldatik3D engine"
 
 [features]
-default = ["opengl"]
+# Desktop builds get both backends. On Android the Vulkan dependency is
+# target-gated in the `vulkan` crate and the runtime backend arm is compiled
+# out, so enabling the feature there is harmless.
+default = ["vulkan", "opengl"]
 vulkan = ["dep:vulkan"]
 opengl = ["dep:opengl"]
 
@@ -21,4 +24,4 @@ opengl = { workspace = true, optional = true }
 anyhow = { workspace = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-vulkan = { path = "../vulkan", optional = true }
+vulkan = { workspace = true, optional = true }

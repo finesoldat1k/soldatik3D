@@ -1,319 +1,181 @@
 #!/usr/bin/env bash
-# cross_build.sh - Cross-platform build script for soldatik3D
-# Usage: ./cross_build.sh [target] [options]
+# Build the Soldatik3D engine and the demo game for the supported platforms.
+#
+# Usage:
+#   ./cross_build.sh linux   [--release]
+#   ./cross_build.sh windows [--release]              # MinGW cross-compile
+#   ./cross_build.sh android [abi] [--release]        # NDK required
+#   ./cross_build.sh all     [--release]
+#
+# Android ABIs: arm64-v8a (default), armeabi-v7a, x86_64, all.
+#
+# GitHub Actions is the canonical build environment (see .github/workflows).
+# This script is a local convenience wrapper and intentionally builds the
+# engine (runtime) and the game (demo) as separate Cargo invocations.
 
 set -euo pipefail
 
+# shaderc-sys 0.8 vendors CMake projects with pre-3.5 policy minimums; CMake 4
+# refuses to configure them without this compatibility override.
+export CMAKE_POLICY_VERSION_MINIMUM="${CMAKE_POLICY_VERSION_MINIMUM:-3.5}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+cd "$SCRIPT_DIR"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+log() { printf '\033[1;34m[build]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[build]\033[0m %s\n' "$*" >&2; }
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+TARGET="${1:-}"
+if [[ -z "$TARGET" ]]; then
+    echo "usage: $0 <linux|windows|android|all> [abi] [--release]" >&2
+    exit 2
+fi
+shift
 
-# Default values
-TARGET="${1:-host}"
 RELEASE=false
-ALL_FEATURES=true
-VERBOSE=false
-RUN_TESTS=false
-RUN_CLIPPY=true
-CHECK_FMT=true
-
-# Parse arguments
-shift || true
+ABI="all"
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --release) RELEASE=true ;;
-        --no-default-features) ALL_FEATURES=false ;;
-        --verbose) VERBOSE=true ;;
-        --test) RUN_TESTS=true ;;
-        --no-clippy) RUN_CLIPPY=false ;;
-        --no-fmt) CHECK_FMT=false ;;
-        *) log_error "Unknown option: $1"; exit 1 ;;
+        arm64-v8a | armeabi-v7a | x86_64 | all) ABI="$1" ;;
+        *)
+            echo "unknown argument: $1" >&2
+            exit 2
+            ;;
     esac
     shift
 done
 
-# Platform detection
-detect_host() {
-    case "$(uname -s)" in
-        Linux*) echo "linux" ;;
-        Darwin*) echo "macos" ;;
-        CYGWIN*|MINGW*|MSYS*) echo "windows" ;;
-        *) echo "unknown" ;;
-    esac
-}
+PROFILE="dev"
+BUILD_DIR="debug"
+PROFILE_ARGS=()
+if [[ "$RELEASE" == true ]]; then
+    PROFILE="release"
+    BUILD_DIR="release"
+    PROFILE_ARGS=(--release)
+fi
 
-HOST_OS=$(detect_host)
+build_engine_and_demo() {
+    local out_dir="$1"
+    local target="$2"
+    shift 2
 
-# Target configurations - focused on Linux, Windows, Android
-declare -A TARGET_CONFIG=(
-    # Linux targets (priority)
-    ["x86_64-unknown-linux-gnu"]="native|linux|gnu"
-    ["x86_64-unknown-linux-musl"]="static|linux|musl"
-    ["aarch64-unknown-linux-gnu"]="cross|linux|gnu"
-    ["aarch64-unknown-linux-musl"]="cross|linux|musl"
-    ["armv7-unknown-linux-gnueabihf"]="cross|linux|gnu"
-    ["armv7-unknown-linux-musleabihf"]="cross|linux|musl"
-    
-    # Windows targets (priority)
-    ["x86_64-pc-windows-gnu"]="cross|windows|gnu"
-    ["x86_64-pc-windows-msvc"]="cross|windows|msvc"
-    
-    # Android targets (priority)
-    ["aarch64-linux-android"]="cross|android|"
-    ["armv7-linux-androideabi"]="cross|android|"
-    ["x86_64-linux-android"]="cross|android|"
-    
-    # Special
-    ["host"]="native|auto|"
-)
-
-# Get target info
-get_target_info() {
-    local target="$1"
-    echo "${TARGET_CONFIG[$target]:-cross|unknown|}"
-}
-
-# Install target if needed
-install_rust_target() {
-    local target="$1"
-    if [[ "$target" != "host" ]]; then
-        log_info "Installing Rust target: $target"
-        rustup target add "$target" || return 1
+    local target_args=()
+    local out="target/${BUILD_DIR}"
+    if [[ -n "$target" ]]; then
+        target_args=(--target "$target")
+        out="target/${target}/${BUILD_DIR}"
     fi
-}
 
-# Check dependencies for target
-check_dependencies() {
-    local target="$1"
-    local info=$(get_target_info "$target")
-    local type=$(echo "$info" | cut -d'|' -f1)
-    local platform=$(echo "$info" | cut -d'|' -f2)
-    local libc=$(echo "$info" | cut -d'|' -f3)
+    # The output directory is generated; clear it so a previous target/profile
+    # cannot leave stale `demo`/`libdemo.so` files in a package.
+    rm -rf "$out_dir"
+    mkdir -p "$out_dir"
 
-    case "$platform" in
-        android)
-            if ! command -v adb &> /dev/null; then
-                log_warn "adb not found, Android deployment will not work"
-            fi
-            if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
-                log_error "ANDROID_NDK_HOME not set. Run: rustup target add $target && export ANDROID_NDK_HOME=/path/to/ndk"
-                return 1
-            fi
-            ;;
-        windows)
-            if [[ "$type" == "cross" ]] && ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-                log_error "MinGW-w64 not installed. Install: apt-get install gcc-mingw-w64-x86-64 (or equivalent)"
-                return 1
-            fi
-            ;;
-        linux)
-            if [[ "$libc" == "musl" ]] && ! command -v musl-gcc &> /dev/null; then
-                log_warn "musl-gcc not found, musl targets may fail"
-            fi
-            ;;
-    esac
-    return 0
-}
+    log "engine -> runtime"
+    cargo build --locked -p runtime "${PROFILE_ARGS[@]}" "${target_args[@]}" "$@"
 
-# Build for target
-build_target() {
-    local target="$1"
-    local cargo_args=()
-    
-    cargo_args+=(--workspace)
-    
-    if [[ "$ALL_FEATURES" == "true" ]]; then
-        cargo_args+=(--all-features)
+    log "game -> demo"
+    cargo build --locked -p demo "${PROFILE_ARGS[@]}" "${target_args[@]}" "$@"
+
+    cp "$out/libruntime.rlib" "$out_dir/"
+    if [[ "$target" == *android* ]]; then
+        # Android loads the demo as a native-activity `cdylib`
+        # (android.app.NativeActivity dlopen's libdemo.so and calls
+        # android_main), not as a standalone executable.
+        cp "$out/libdemo.so" "$out_dir/"
+    elif [[ -f "$out/demo.exe" ]]; then
+        cp "$out/demo.exe" "$out_dir/"
     else
-        cargo_args+=(--no-default-features)
+        cp "$out/demo" "$out_dir/"
     fi
-    
-    if [[ "$RELEASE" == "true" ]]; then
-        cargo_args+=(--release)
-    fi
-    
-    if [[ "$VERBOSE" == "true" ]]; then
-        cargo_args+=(--verbose)
-    fi
-    
-    if [[ "$target" != "host" ]]; then
-        cargo_args+=(--target "$target")
-    fi
-    
-    log_info "Building for $target with args: ${cargo_args[*]}"
-    
-    # Set environment variables for cross-compilation
-    export CARGO_TARGET_DIR="${PROJECT_ROOT}/target"
-    
-    case "$target" in
-        *-linux-android)
-            export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-/opt/android/ndk}"
-            if [[ -z "$ANDROID_NDK_HOME" || ! -d "$ANDROID_NDK_HOME" ]]; then
-                log_error "ANDROID_NDK_HOME not set or invalid"
-                return 1
-            fi
-            ;;
-        *-pc-windows-gnu)
-            export CC=x86_64-w64-mingw32-gcc
-            export CXX=x86_64-w64-mingw32-g++
-            export AR=x86_64-w64-mingw32-ar
-            ;;
-    esac
-    
-    cargo build "${cargo_args[@]}"
+    log "artifacts -> $out_dir"
 }
 
-# Run tests for target
-test_target() {
-    local target="$1"
-    local cargo_args=()
-    
-    cargo_args+=(--workspace)
-    
-    if [[ "$ALL_FEATURES" == "true" ]]; then
-        cargo_args+=(--all-features)
-    fi
-    
-    if [[ "$RELEASE" == "true" ]]; then
-        cargo_args+=(--release)
-    fi
-    
-    if [[ "$VERBOSE" == "true" ]]; then
-        cargo_args+=(--verbose)
-    fi
-    
-    if [[ "$target" != "host" ]]; then
-        cargo_args+=(--target "$target")
-    fi
-    
-    cargo test "${cargo_args[@]}"
+build_linux() {
+    build_engine_and_demo "dist/linux-x86_64" "" --all-features
 }
 
-# Run clippy
-run_clippy() {
-    local target="$1"
-    local cargo_args=()
-    
-    cargo_args+=(clippy --workspace --all-targets)
-    
-    if [[ "$ALL_FEATURES" == "true" ]]; then
-        cargo_args+=(--all-features)
-    else
-        cargo_args+=(--no-default-features)
-    fi
-    
-    if [[ "$target" != "host" ]]; then
-        cargo_args+=(--target "$target")
-    fi
-    
-    cargo "${cargo_args[@]}" -- -D warnings
-}
-
-# Check formatting
-check_fmt() {
-    cargo fmt --all -- --check
-}
-
-# Generate docs
-generate_docs() {
-    local target="$1"
-    local cargo_args=()
-    
-    cargo_args+=(doc --workspace --no-deps)
-    
-    if [[ "$ALL_FEATURES" == "true" ]]; then
-        cargo_args+=(--all-features)
-    fi
-    
-    if [[ "$target" != "host" ]]; then
-        cargo_args+=(--target "$target")
-    fi
-    
-    cargo "${cargo_args[@]}"
-}
-
-# Main build function
-main() {
-    log_info "Starting cross-platform build for target: $TARGET"
-    log_info "Host OS: $HOST_OS"
-    log_info "Release: $RELEASE, All features: $ALL_FEATURES"
-    
-    # Check if target is supported
-    if [[ -z "${TARGET_CONFIG[$TARGET]:-}" ]]; then
-        log_error "Unsupported target: $TARGET"
-        log_info "Supported targets:"
-        for t in "${!TARGET_CONFIG[@]}"; do
-            echo "  $t"
-        done | sort
+build_windows() {
+    if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+        echo "MinGW-w64 is required. Install it with: sudo apt-get install mingw-w64" >&2
         exit 1
     fi
-    
-    # Check dependencies
-    check_dependencies "$TARGET" || exit 1
-    
-    # Install Rust target
-    install_rust_target "$TARGET" || exit 1
-    
-    # Check formatting
-    if [[ "$CHECK_FMT" == "true" ]]; then
-        log_info "Checking formatting..."
-        check_fmt || { log_error "Formatting check failed. Run: cargo fmt --all"; exit 1; }
-    fi
-    
-    # Run clippy
-    if [[ "$RUN_CLIPPY" == "true" ]]; then
-        log_info "Running clippy..."
-        run_clippy "$TARGET" || exit 1
-    fi
-    
-    # Build
-    log_info "Building..."
-    build_target "$TARGET" || exit 1
-    
-    # Run tests
-    if [[ "$RUN_TESTS" == "true" ]]; then
-        log_info "Running tests..."
-        test_target "$TARGET" || exit 1
-    fi
-    
-    # Generate docs (only for host or if explicitly requested)
-    if [[ "$TARGET" == "host" ]]; then
-        log_info "Generating documentation..."
-        generate_docs "$TARGET" || exit 1
-    fi
-    
-    log_success "Build completed successfully for $TARGET"
-    
-    # Show output location
-    local out_dir="target"
-    if [[ "$TARGET" != "host" ]]; then
-        out_dir="target/$TARGET"
-    fi
-    if [[ "$RELEASE" == "true" ]]; then
-        out_dir="$out_dir/release"
-    else
-        out_dir="$out_dir/debug"
-    fi
-    log_info "Artifacts in: $out_dir"
-    
-    # List binaries
-    if [[ -d "$out_dir" ]]; then
-        find "$out_dir" -maxdepth 1 -type f -executable -name "demo" 2>/dev/null | while read -r bin; do
-            log_info "Binary: $bin"
-            file "$bin"
-        done
-    fi
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}"
+    # The cross build intentionally uses OpenGL only: shaderc's vendored C++
+    # toolchain is not available for every MinGW installation. The native
+    # Windows MSVC CI job builds both backends.
+    build_engine_and_demo "dist/windows-x86_64" "x86_64-pc-windows-gnu" \
+        --no-default-features --features opengl
 }
 
-main "$@"
+android_linker() {
+    local target="$1"
+    local api="29"
+    local ndk_bin="${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point at an Android NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    case "$target" in
+        aarch64-linux-android) echo "$ndk_bin/aarch64-linux-android${api}-clang" ;;
+        armv7-linux-androideabi) echo "$ndk_bin/armv7a-linux-androideabi${api}-clang" ;;
+        x86_64-linux-android) echo "$ndk_bin/x86_64-linux-android${api}-clang" ;;
+        *) echo "unsupported Android target: $target" >&2; exit 1 ;;
+    esac
+}
+
+build_android() {
+    local abi="$1"
+    local targets=()
+    case "$abi" in
+        arm64-v8a) targets=(aarch64-linux-android) ;;
+        armeabi-v7a) targets=(armv7-linux-androideabi) ;;
+        x86_64) targets=(x86_64-linux-android) ;;
+        all) targets=(aarch64-linux-android armv7-linux-androideabi) ;;
+        *)
+            echo "unknown Android ABI: $abi" >&2
+            exit 2
+            ;;
+    esac
+
+    : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point at an Android NDK}"
+    for target in "${targets[@]}"; do
+        local linker env_name target_env abi_dir
+        linker="$(android_linker "$target")"
+        env_name="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER"
+        target_env="$(echo "$target" | tr 'a-z-' 'A-Z_')"
+        case "$target" in
+            aarch64-linux-android) abi_dir="arm64-v8a" ;;
+            armv7-linux-androideabi) abi_dir="armeabi-v7a" ;;
+            x86_64-linux-android) abi_dir="x86_64" ;;
+        esac
+        export "$env_name"="$linker"
+        export "CC_${target_env}=$linker"
+        export "AR_${target_env}=${linker%/*}/llvm-ar"
+        log "Android $target (OpenGL ES)"
+        build_engine_and_demo "dist/android-${abi_dir}/${target}" "$target" \
+            --no-default-features --features opengl
+    done
+}
+
+case "$TARGET" in
+    linux) build_linux ;;
+    windows) build_windows ;;
+    android) build_android "$ABI" ;;
+    all)
+        build_linux
+        if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+            build_windows
+        else
+            warn "MinGW-w64 not found; skipping the Windows cross build"
+        fi
+        if [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
+            build_android all
+        else
+            warn "ANDROID_NDK_HOME is not set; skipping the Android build"
+        fi
+        ;;
+    *)
+        echo "unknown target: $TARGET" >&2
+        exit 2
+        ;;
+esac
+
+log "done (${PROFILE})"

@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target
 
+# Local packaging output (cross_build.sh, release workflows)
+/dist
+
 # rustfmt backups
 **/*.rs.bk
 

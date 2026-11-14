@@ -6,12 +6,15 @@ license.workspace = true
 repository.workspace = true
 description = "Vulkan backend for the Soldatik3D engine"
 
-[dependencies]
+# The Vulkan backend is not compiled for Android. Keeping the native
+# dependencies target-gated means `cargo build --workspace` on Android does not
+# try to build ash/shaderc, while the desktop build keeps the full backend.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+anyhow = { workspace = true }
 scene = { workspace = true }
 assets = { workspace = true }
 ui = { workspace = true }
 render = { workspace = true }
-anyhow = { workspace = true }
 ash = { workspace = true }
 ash-window = { workspace = true }
 glam = { workspace = true }

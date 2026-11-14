@@ -24,6 +24,12 @@
 - **Два бэкенда с одинаковым результатом**: Vulkan 1.2 (`ash` + `shaderc`) и
   OpenGL 3.3 core (`glutin` + `glow`). Переключение одной переменной окружения
   или одним полем `GameConfig`.
+- **Управляемый VSync**: `On`, `Off`, `Adaptive`, `Mailbox`; настраивается через
+  `GameConfig`, `SOLDATIK3D_VSYNC` и команды консоли `vsync.*`. По умолчанию
+  включён `On`; для бенчмарков используйте `SOLDATIK3D_VSYNC=off`.
+- **Кроссплатформенная сборка**: Linux x86_64, Windows x86_64 (MSVC) и Android
+  (arm64-v8a / armeabi-v7a) собираются в GitHub Actions на каждый push и
+  прикрепляются к каждому GitHub Release/prerelease.
 - **Forward PBR-рендеринг**: metallic/roughness, IBL из процедурного
   environment cubemap, до восьми точечных источников света.
 - **Тени**: ортографическая shadow map 2048² с фильтрацией.
@@ -34,10 +40,12 @@
 - **Камеры как часть движка**: `World` и `CameraRig` позволяют спавнить
   именованные камеры, выбирать активную, переключать следующую/предыдущую и
   удалять их. Рантайм всегда рендерит через активную камеру.
-- **Встроенная консоль**: команды камер, диагностика, история ввода и
-  расширение командами игры. Открывается по `F1` или `` ` ``.
-- **Immediate-mode UI** со встроенным bitmap-шрифтом: панели, кнопки, статус,
-  перекрестие.
+- **Встроенная консоль**: реестр команд, автодополнение по `Tab`, история
+  ввода, подсказки и расширение командами игры. Открывается по `F1` или `` ` ``.
+- **Immediate-mode UI** со встроенным bitmap-шрифтом: заглавные и строчные
+  `a-z`, цифры, пунктуация, панели, кнопки, статус и перекрестие.
+- **Скриншоты и диагностика**: `F12` или команда `screenshot` сохраняет кадр в
+  PNG; `SOLDATIK3D_VALIDATION=1` включает Vulkan validation layers.
 - **Кроссплатформенное окно и ввод** через `winit`, изолированные в
   `platform`; бэкенды получают только raw handles и размер поверхности.
 - **Демо-игра** с процедурным уровнем, семью камерами, освещением,
@@ -49,12 +57,18 @@
 
 ```text
 soldatik3D/
+├── .cargo/
+│   └── config.toml   # профили сборки; кросс-линкеры задаются в CI/скрипте
+├── .github/
+│   └── workflows/
+│       ├── ci.yml    # Linux + Windows + Android на каждый push/PR
+│       └── release.yml
 ├── crates/
 │   ├── assets/       # текстуры, bitmap-шрифт, environment cubemap
 │   ├── scene/        # Camera, CameraRig, World, Mesh, Material, Light, Scene
 │   ├── ui/           # UiDrawList и UiVertex для immediate-mode UI
 │   ├── render/       # Renderer, BackendKind, FrameData, WindowSurface
-│   ├── platform/     # winit: окно, ввод, raw handles
+│   ├── platform/     # winit: окно, ввод, raw handles, TargetOS
 │   ├── vulkan/       # Vulkan-бэкенд, пайплайны и GLSL-шейдеры
 │   ├── opengl/       # OpenGL-бэкенд, FBO-пайплайн и GLSL-шейдеры
 │   └── runtime/      # фасад: Game trait, event loop, World, консоль, фабрика
@@ -62,8 +76,10 @@ soldatik3D/
 │   └── demo/         # демонстрационная игра (package `demo`)
 ├── docs/
 │   ├── ARCHITECTURE.md
+│   ├── CI.md         # сборка, кросс-компиляция и GitHub Actions
 │   ├── screenshot.jpg
 │   └── console.jpg
+├── cross_build.sh    # локальная сборка Linux/Windows/Android
 └── Cargo.toml        # workspace
 ```
 
@@ -88,13 +104,21 @@ examples/demo ──► runtime ──► scene ──► assets
 
 ## Требования
 
-- **Rust 1.88+** (edition 2024).
-- **Vulkan 1.2+**, Vulkan loader и установленный ICD-драйвер.
-- Для Vulkan-бэкенда `shaderc` компилирует GLSL во время запуска: нужны
-  C++17-компилятор, CMake и Python 3. В debug-сборках подключается
+- **Rust stable** (edition 2024; в CI используется `dtolnay/rust-toolchain@stable`).
+- **Linux**: Vulkan loader + ICD, OpenGL 3.3 и EGL/GLX, заголовки X11/Wayland
+  для `winit`/`glutin`.
+- **Windows**: toolchain MSVC (Visual Studio Build Tools с C++), драйвер
+  Vulkan, OpenGL 3.3 через WGL/EGL.
+- **Android**: NDK r26c (или новее), API 29+, OpenGL ES 3.0. Android-сборка
+  использует только OpenGL ES; Vulkan-бэкенд в неё не компилируется. Демо
+  собирается как `libdemo.so` — native-activity `cdylib` с `android_main`, а
+  не как отдельный исполняемый файл.
+- Для Vulkan-бэкенда на desktop `shaderc` компилирует GLSL во время запуска:
+  нужны C++17-компилятор, CMake и Python 3. В debug-сборках подключается
   `VK_LAYER_KHRONOS_validation`, если слой установлен.
-- **OpenGL 3.3 core** и рабочий EGL/GLX (Linux), WGL (Windows) или CGL
-  (macOS). На Linux достаточно драйвера Mesa или проприетарного драйвера.
+
+macOS, iOS и WebAssembly не поддерживаются: платформенные ветки для них
+удалены из `platform`, а CI собирает только Linux, Windows и Android.
 
 Arch Linux:
 
@@ -110,12 +134,19 @@ sudo pacman -S rust vulkan-icd-loader vulkan-validation-layers cmake python mesa
 git clone https://github.com/finesoldat1k/soldatik3D
 cd soldatik3D
 
-# debug-сборка, оба бэкенда включены
+# движок и игра собираются отдельно
+cargo build --locked -p runtime --all-features
+cargo build --locked -p demo --all-features
+
+# debug-запуск, оба бэкенда включены
 cargo run -p demo
 
 # release-сборка
 cargo run --release -p demo
 ```
+
+Те же команды выполняются в GitHub Actions для Linux, Windows и Android на
+каждый push; подробности — в [`docs/CI.md`](docs/CI.md).
 
 ### Выбор графического бэкенда
 
@@ -217,10 +248,11 @@ fn main() -> anyhow::Result<()> {
 | `Ctrl` | вниз в режиме полёта |
 | `F` | включить/выключить полёт |
 | `Мышь` | обзор |
-| `Tab` | освободить/захватить курсор |
+| `Tab` | освободить/захватить курсор; в открытой консоли — автодополнение |
 | `F1` / `` ` `` | открыть/закрыть консоль |
 | `Enter` | выполнить команду |
 | `↑` / `↓` | история команд |
+| `F12` | сохранить скриншот в PNG |
 | `Esc` | закрыть консоль, освободить курсор или выйти |
 | `F2` / `F3` / `F4` | lit / normals / depth |
 
@@ -235,10 +267,21 @@ fn main() -> anyhow::Result<()> {
 | Переменная | Назначение |
 | --- | --- |
 | `SOLDATIK3D_BACKEND=vulkan\|opengl` | выбрать графический бэкенд |
+| `SOLDATIK3D_VSYNC=on\|off\|adaptive\|mailbox` | режим вертикальной синхронизации |
 | `SOLDATIK3D_MAX_FRAMES=<n>` | отрендерить `n` кадров и корректно завершиться |
 | `SOLDATIK3D_COMMANDS="cmd1;cmd2"` | выполнить команды консоли после старта |
 | `SOLDATIK3D_CONSOLE=1` | открыть консоль при старте |
 | `SOLDATIK3D_DEBUG_VIEW=normals\|depth` | стартовый debug-вид демо |
+| `SOLDATIK3D_VALIDATION=1` | включить Vulkan validation layers |
+
+По умолчанию VSync включён (`On`). Для замера максимального FPS:
+
+```bash
+SOLDATIK3D_VSYNC=off cargo run --release -p demo
+```
+
+Режим можно переключать на ходу командами `vsync.on`, `vsync.off`,
+`vsync.adaptive`, `vsync.mailbox`, `vsync.toggle` и `vsync.current`.
 
 Пример автоматической проверки камер и консоли:
 
@@ -256,9 +299,11 @@ cargo run -p demo
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets
-cargo test --workspace
-cargo doc --workspace --no-deps --open
+cargo clippy --workspace --all-targets --all-features
+cargo build -p runtime --all-features
+cargo build -p demo --all-features
+cargo test --workspace --all-features
+cargo doc --workspace --no-deps --all-features --open
 ```
 
 Smoke-тест обоих бэкендов без ручного закрытия окна:
@@ -267,6 +312,23 @@ Smoke-тест обоих бэкендов без ручного закрыти�
 SOLDATIK3D_BACKEND=vulkan SOLDATIK3D_MAX_FRAMES=3 cargo run -p demo
 SOLDATIK3D_BACKEND=opengl SOLDATIK3D_MAX_FRAMES=3 cargo run -p demo
 ```
+
+Локальная кросс-сборка:
+
+```bash
+./cross_build.sh linux
+./cross_build.sh windows          # MinGW-w64, только OpenGL
+ANDROID_NDK_HOME=~/android-ndk-r26c ./cross_build.sh android arm64-v8a
+```
+
+Android-демо — это `libdemo.so`, а не самостоятельный бинарник. Для запуска
+нужен APK-хост с activity `android.app.NativeActivity`, `android:hasCode="false"`,
+файлом `lib/<abi>/libdemo.so` и meta-data `android.app.lib_name="demo"`.
+Подробности — в [`docs/CI.md`](docs/CI.md).
+
+GitHub Actions запускает `CI` на каждый push/PR и `Release` при публикации
+GitHub Release, включая prerelease. Полное описание job'ов, артефактов и
+требований к NDK — в [`docs/CI.md`](docs/CI.md).
 
 Шейдеры Vulkan компилируются `shaderc` при запуске из `crates/vulkan/shaders/`.
 OpenGL-шейдеры лежат в `crates/opengl/shaders/` и также встроены в бинарник.

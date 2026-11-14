@@ -7,6 +7,16 @@ repository.workspace = true
 description = "Soldatik3D engine demo: procedural level, cameras and console"
 publish = false
 
+[lib]
+# `cdylib` is the Android native-activity library (`libdemo.so`); `rlib`
+# keeps the desktop binary linking against the same library target.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["vulkan", "opengl"]
+vulkan = ["runtime/vulkan"]
+opengl = ["runtime/opengl"]
+
 [dependencies]
 runtime = { workspace = true }
 anyhow = { workspace = true }

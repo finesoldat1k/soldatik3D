@@ -154,6 +154,53 @@ impl GpuScene {
     }
 }
 
+/// Texture format used for the HDR intermediate targets.
+///
+/// Desktop GL supports RGBA16F color attachments directly. OpenGL ES 3.0 only
+/// guarantees RGBA16F as a render target when `EXT_color_buffer_half_float`
+/// (or `EXT_color_buffer_float`) is present; when neither extension exists the
+/// renderer falls back to RGBA8 so that bloom and SSAO still run, albeit without
+/// values above 1.0 in the HDR buffer.
+#[derive(Clone, Copy)]
+struct HdrFormat {
+    internal: i32,
+    format: u32,
+    data_type: u32,
+}
+
+fn hdr_format(gl: &glow::Context) -> HdrFormat {
+    #[cfg(target_os = "android")]
+    {
+        let extensions = gl.supported_extensions();
+        if extensions.contains("EXT_color_buffer_half_float")
+            || extensions.contains("EXT_color_buffer_float")
+        {
+            return HdrFormat {
+                internal: glow::RGBA16F as i32,
+                format: glow::RGBA,
+                data_type: glow::FLOAT,
+            };
+        }
+        println!(
+            "[engine-opengl] EXT_color_buffer_half_float unavailable; using RGBA8 HDR targets"
+        );
+        return HdrFormat {
+            internal: glow::RGBA8 as i32,
+            format: glow::RGBA,
+            data_type: glow::UNSIGNED_BYTE,
+        };
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = gl;
+        HdrFormat {
+            internal: glow::RGBA16F as i32,
+            format: glow::RGBA,
+            data_type: glow::FLOAT,
+        }
+    }
+}
+
 /// Swapchain-sized attachments. Recreated atomically on resize.
 struct Targets {
     width: u32,
@@ -174,22 +221,14 @@ struct Targets {
 }
 
 impl Targets {
-    unsafe fn create(gl: &glow::Context, width: u32, height: u32) -> Result<Self> {
+    unsafe fn create(gl: &glow::Context, width: u32, height: u32, hdr: HdrFormat) -> Result<Self> {
         let width = width.max(1);
         let height = height.max(1);
         let half_width = (width / 2).max(1);
         let half_height = (height / 2).max(1);
 
-        let hdr_color = unsafe {
-            color_texture(
-                gl,
-                width,
-                height,
-                glow::RGBA16F as i32,
-                glow::RGBA,
-                glow::FLOAT,
-            )?
-        };
+        let hdr_color =
+            unsafe { color_texture(gl, width, height, hdr.internal, hdr.format, hdr.data_type)? };
         let hdr_depth = unsafe { depth_texture(gl, width, height) }?;
         let hdr_fbo = unsafe { framebuffer(gl, Some(hdr_color), Some(hdr_depth)) }?;
 
@@ -198,9 +237,9 @@ impl Targets {
                 gl,
                 half_width,
                 half_height,
-                glow::RGBA16F as i32,
-                glow::RGBA,
-                glow::FLOAT,
+                hdr.internal,
+                hdr.format,
+                hdr.data_type,
             )?
         };
         let bloom_b = unsafe {
@@ -208,9 +247,9 @@ impl Targets {
                 gl,
                 half_width,
                 half_height,
-                glow::RGBA16F as i32,
-                glow::RGBA,
-                glow::FLOAT,
+                hdr.internal,
+                hdr.format,
+                hdr.data_type,
             )?
         };
         let bloom_a_fbo = unsafe { framebuffer(gl, Some(bloom_a), None) }?;
@@ -305,6 +344,7 @@ pub struct OpenGlRenderer {
     stats: RenderStats,
     size: (u32, u32),
     vsync: VsyncMode,
+    capture_requested: bool,
 }
 
 impl OpenGlRenderer {
@@ -323,7 +363,7 @@ impl OpenGlRenderer {
         let shadow_depth = unsafe { depth_texture(gl, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE) }?;
         let shadow_fbo = unsafe { depth_only_framebuffer(gl, shadow_depth) }?;
 
-        let targets = unsafe { Targets::create(gl, size.0, size.1) }?;
+        let targets = unsafe { Targets::create(gl, size.0, size.1, hdr_format(gl)) }?;
 
         let fullscreen_vao = unsafe { gl.create_vertex_array() }
             .map_err(|error| anyhow!("failed to create the fullscreen vertex array: {error}"))?;
@@ -388,8 +428,8 @@ impl OpenGlRenderer {
         }
 
         let environment = generate_environment_cubemap(128);
-        let irradiance = unsafe { cubemap_rgba32f(gl, 128, &environment) }?;
-        let prefiltered = unsafe { cubemap_rgba32f(gl, 128, &environment) }?;
+        let irradiance = unsafe { cubemap_environment(gl, 128, &environment) }?;
+        let prefiltered = unsafe { cubemap_environment(gl, 128, &environment) }?;
 
         let mut world_program = ShaderProgram::new(
             gl,
@@ -508,6 +548,7 @@ impl OpenGlRenderer {
             stats,
             size,
             vsync,
+            capture_requested: false,
         })
     }
 
@@ -521,7 +562,7 @@ impl OpenGlRenderer {
         if let Some(targets) = self.targets.take() {
             unsafe { targets.destroy(gl) };
         }
-        self.targets = Some(unsafe { Targets::create(gl, width, height) }?);
+        self.targets = Some(unsafe { Targets::create(gl, width, height, hdr_format(gl)) }?);
         Ok(())
     }
 
@@ -755,9 +796,68 @@ impl OpenGlRenderer {
             }
         }
 
+        // Capture the back buffer before it is presented. The UI pass above has
+        // already drawn into the default framebuffer, so the PNG matches the
+        // frame the user is looking at.
+        let capture_result = if self.capture_requested {
+            self.capture_requested = false;
+            self.capture_framebuffer()
+        } else {
+            Ok(())
+        };
+
         self.context.swap_buffers()?;
+        capture_result?;
         self.stats.vertices = self.scene.total_vertices;
         self.stats.triangles = self.scene.total_vertices / 3;
+        Ok(())
+    }
+
+    fn capture_framebuffer(&self) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let filename = format!("screenshot_{timestamp}.png");
+        let gl = self.context.glow();
+        let (width, height) = self.extent();
+        if width == 0 || height == 0 {
+            anyhow::bail!("cannot capture a zero-sized framebuffer");
+        }
+        let pixels = unsafe {
+            let mut data = vec![0u8; (width * height * 4) as usize];
+            gl.read_pixels(
+                0,
+                0,
+                width as i32,
+                height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut data)),
+            );
+            data
+        };
+        // Flip vertically because OpenGL origin is bottom-left.
+        let mut flipped = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            let src_row = &pixels[(y * width * 4) as usize..((y + 1) * width * 4) as usize];
+            let dst_row = &mut flipped
+                [((height - 1 - y) * width * 4) as usize..((height - y) * width * 4) as usize];
+            dst_row.copy_from_slice(src_row);
+        }
+        let mut file = std::fs::File::create(&filename)
+            .with_context(|| format!("failed to create {filename}"))?;
+        let mut encoder = png::Encoder::new(&mut file, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .context("failed to write PNG header")?;
+        writer
+            .write_image_data(&flipped)
+            .context("failed to write PNG image data")?;
+        eprintln!("[engine-opengl] screenshot saved to {filename}");
         Ok(())
     }
 
@@ -818,47 +918,9 @@ impl Renderer for OpenGlRenderer {
     }
 
     fn screenshot(&mut self) -> Result<()> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let filename = format!("screenshot_{timestamp}.png");
-        let gl = self.context.glow();
-        let (width, height) = self.extent();
-        let pixels = unsafe {
-            let mut data = vec![0u8; (width * height * 4) as usize];
-            gl.read_pixels(
-                0,
-                0,
-                width as i32,
-                height as i32,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(Some(&mut data)),
-            );
-            data
-        };
-        // Flip vertically because OpenGL origin is bottom-left
-        let mut flipped = vec![0u8; (width * height * 4) as usize];
-        for y in 0..height {
-            let src_row = &pixels[(y * width * 4) as usize..((y + 1) * width * 4) as usize];
-            let dst_row = &mut flipped
-                [((height - 1 - y) * width * 4) as usize..((height - y) * width * 4) as usize];
-            dst_row.copy_from_slice(src_row);
-        }
-        let mut file = std::fs::File::create(&filename)
-            .with_context(|| format!("failed to create {filename}"))?;
-        let mut encoder = png::Encoder::new(&mut file, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder
-            .write_header()
-            .context("failed to write PNG header")?;
-        writer
-            .write_image_data(&flipped)
-            .context("failed to write PNG image data")?;
-        eprintln!("[engine-opengl] screenshot saved to {filename}");
+        // The capture has to happen after the UI pass has drawn into the
+        // default framebuffer. `render` performs it right before swapping.
+        self.capture_requested = true;
         Ok(())
     }
 }
@@ -1014,11 +1076,22 @@ unsafe fn texture_2d_rgba8(
     Ok(texture)
 }
 
-unsafe fn cubemap_rgba32f(gl: &glow::Context, size: u32, pixels: &[f32]) -> Result<glow::Texture> {
+unsafe fn cubemap_environment(
+    gl: &glow::Context,
+    size: u32,
+    pixels: &[f32],
+) -> Result<glow::Texture> {
     let texture = unsafe { gl.create_texture() }
         .map_err(|error| anyhow!("failed to create a cubemap: {error}"))?;
     let bytes: &[u8] = bytemuck::cast_slice(pixels);
     let face_size = bytes.len() / 6;
+    // RGBA32F is filterable on desktop but not guaranteed by OpenGL ES 3.0.
+    // RGBA16F is core-filterable there and more than enough for the procedural
+    // environment (values peak around 50).
+    #[cfg(target_os = "android")]
+    let internal_format = glow::RGBA16F as i32;
+    #[cfg(not(target_os = "android"))]
+    let internal_format = glow::RGBA32F as i32;
     unsafe {
         gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
         for face in 0..6 {
@@ -1026,7 +1099,7 @@ unsafe fn cubemap_rgba32f(gl: &glow::Context, size: u32, pixels: &[f32]) -> Resu
             gl.tex_image_2d(
                 glow::TEXTURE_CUBE_MAP_POSITIVE_X + face as u32,
                 0,
-                glow::RGBA32F as i32,
+                internal_format,
                 size as i32,
                 size as i32,
                 0,
@@ -1116,6 +1189,11 @@ unsafe fn color_texture(
 unsafe fn depth_texture(gl: &glow::Context, width: u32, height: u32) -> Result<glow::Texture> {
     let texture = unsafe { gl.create_texture() }
         .map_err(|error| anyhow!("failed to create a depth target: {error}"))?;
+    // CLAMP_TO_BORDER is core in desktop GL but not in OpenGL ES 3.0.
+    #[cfg(target_os = "android")]
+    let border_wrap = glow::CLAMP_TO_EDGE;
+    #[cfg(not(target_os = "android"))]
+    let border_wrap = glow::CLAMP_TO_BORDER;
     unsafe {
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         gl.tex_image_2d(
@@ -1139,16 +1217,8 @@ unsafe fn depth_texture(gl: &glow::Context, width: u32, height: u32) -> Result<g
             glow::TEXTURE_MAG_FILTER,
             glow::NEAREST as i32,
         );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_BORDER as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_BORDER as i32,
-        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, border_wrap as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, border_wrap as i32);
         gl.tex_parameter_i32(
             glow::TEXTURE_2D,
             glow::TEXTURE_COMPARE_MODE,
@@ -1209,6 +1279,10 @@ unsafe fn depth_only_framebuffer(
             Some(depth),
             0,
         );
+        // `glDrawBuffer` is desktop-only; OpenGL ES 3.0 uses `glDrawBuffers`.
+        #[cfg(target_os = "android")]
+        gl.draw_buffers(&[glow::NONE]);
+        #[cfg(not(target_os = "android"))]
         gl.draw_buffer(glow::NONE);
         gl.read_buffer(glow::NONE);
         let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);

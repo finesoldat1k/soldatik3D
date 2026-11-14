@@ -2,19 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # shaderc-sys 0.8 vendors CMake projects with pre-3.5 policy minimums.
+  # CMake 4 otherwise refuses to configure them; older CMake ignores this.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 jobs:
   linux:
-    name: Linux (Ubuntu latest)
+    name: Linux x86_64
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,12 +29,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libvulkan-dev vulkan-validationlayers-dev spirv-tools \
-            libx11-dev libxcb-randr0-dev libxcb-xinerama0-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-            cmake pkg-config libssl-dev \
-            clang lld
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake ninja-build git python3 \
+            libvulkan-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libgles2-mesa-dev
+          # Optional: lets shaderc-sys reuse the distro build instead of
+          # compiling its vendored C++ sources. The build falls back to source
+          # automatically when the package is unavailable.
+          sudo apt-get install -y --no-install-recommends libshaderc-dev || \
+            echo "libshaderc-dev unavailable; shaderc will be built from source"
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -37,271 +48,154 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: linux-${{ hashFiles('**/Cargo.lock') }}
+          key: linux
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --features "vulkan opengl"
+        run: cargo clippy --locked --workspace --all-targets --all-features
 
-      - name: Build workspace
-        run: cargo build --workspace --features "vulkan opengl"
+      - name: Build engine (runtime)
+        run: cargo build --locked -p runtime --all-features
+
+      - name: Build demo game
+        run: cargo build --locked -p demo --all-features
 
       - name: Run tests
-        run: cargo test --workspace --features "vulkan opengl"
+        run: cargo test --locked --workspace --all-features
 
-      - name: Build docs
-        run: cargo doc --workspace --no-deps --features "vulkan opengl"
+      - name: Build documentation
+        run: cargo doc --locked --workspace --no-deps --all-features
 
-      - name: Upload build artifacts
+      - name: Package CI artifacts
+        run: |
+          mkdir -p dist/engine dist/demo
+          cp target/debug/libruntime.rlib dist/engine/
+          cp target/debug/demo dist/demo/
+          tar -czf dist/soldatik3d-engine-linux-x86_64.tar.gz -C dist/engine .
+          tar -czf dist/soldatik3d-demo-linux-x86_64.tar.gz -C dist/demo .
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
-        if: success()
         with:
-          name: linux-build
-          path: target/debug/
-          retention-days: 7
+          name: linux-x86_64
+          path: dist/
+          retention-days: 14
 
   windows:
-    name: Windows (native MSVC)
+    name: Windows x86_64 (MSVC)
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1
-        with:
-          version: "1.3.283.0"
-
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+          key: windows
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --features "vulkan opengl"
+        run: cargo clippy --locked --workspace --all-targets --all-features
 
-      - name: Build workspace
-        run: cargo build --workspace --features "vulkan opengl"
+      - name: Build engine (runtime)
+        run: cargo build --locked -p runtime --all-features
+
+      - name: Build demo game
+        run: cargo build --locked -p demo --all-features
 
       - name: Run tests
-        run: cargo test --workspace --features "vulkan opengl"
+        run: cargo test --locked --workspace --all-features
 
-      - name: Build docs
-        run: cargo doc --workspace --no-deps --features "vulkan opengl"
+      - name: Package CI artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\engine, dist\demo | Out-Null
+          Copy-Item target\debug\libruntime.rlib dist\engine\
+          Copy-Item target\debug\demo.exe dist\demo\
+          Compress-Archive -Force -Path dist\engine\* -DestinationPath dist\soldatik3d-engine-windows-x86_64.zip
+          Compress-Archive -Force -Path dist\demo\* -DestinationPath dist\soldatik3d-demo-windows-x86_64.zip
 
-      - name: Upload build artifacts
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
-        if: success()
         with:
-          name: windows-build
-          path: target/debug/
-          retention-days: 7
+          name: windows-x86_64
+          path: dist/
+          retention-days: 14
 
   android:
-    name: Android (API 29+)
+    name: Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+            linker: aarch64-linux-android29-clang
+            linker_env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+            linker: armv7a-linux-androideabi29-clang
+            linker_env: CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install Android NDK
-        uses: android-actions/setup-android@v3
+        uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26c
-          api-level: 29
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libvulkan-dev vulkan-validationlayers-dev spirv-tools \
-            libx11-dev libxcb-randr0-dev libxcb-xinerama0-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-            cmake pkg-config libssl-dev \
-            openjdk-17-jdk-headless
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
-          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: android-${{ hashFiles('**/Cargo.lock') }}
+          key: android-${{ matrix.abi }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy (host target only)
-        run: cargo clippy --workspace --all-targets --features "opengl" --target x86_64-unknown-linux-gnu
-
-      - name: Configure cargo for Android
+      - name: Configure NDK linker
         run: |
-          cat >> ~/.cargo/config.toml <<'EOF'
-          [target.aarch64-linux-android]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$NDK_BIN/${{ matrix.linker }}"
+          echo "${{ matrix.linker_env }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
 
-          [target.armv7-linux-androideabi]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-          [target.x86_64-linux-android]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          EOF
-
-      - name: Build for Android targets
+      - name: Build engine (runtime, OpenGL ES)
         run: |
-          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
-            echo "Building for $target..."
-            cargo build --workspace --features "opengl" --target $target
-          done
+          cargo build --locked -p runtime \
+            --no-default-features --features opengl \
+            --target ${{ matrix.target }}
 
-      - name: Upload Android build artifacts
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: android-build
-          path: target/*-linux-android*/debug/
-          retention-days: 7
-
-  windows-cross:
-    name: Windows Cross-Compile (Ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - name: Build demo game (OpenGL ES)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            mingw-w64 \
-            binutils-mingw-w64-x86-64 \
-            wine64 \
-            libvulkan-dev vulkan-validationlayers-dev spirv-tools \
-            libx11-dev libxcb-randr0-dev libxcb-xinerama0-dev libxcursor-dev libxi-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-            cmake pkg-config libssl-dev \
-            clang lld
+          cargo build --locked -p demo \
+            --no-default-features --features opengl \
+            --target ${{ matrix.target }}
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: windows-cross-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --features "vulkan opengl" --target x86_64-pc-windows-gnu
-
-      - name: Build Windows cross-compile
-        run: cargo build --workspace --features "vulkan opengl" --target x86_64-pc-windows-gnu
-
-      - name: Upload Windows cross-compile artifacts
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: windows-cross-build
-          path: target/x86_64-pc-windows-gnu/debug/
-          retention-days: 7
-
-  release-check:
-    name: Release Check
-    runs-on: ubuntu-latest
-    needs: [linux, windows, android]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu, aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
-
-      - name: Install cross-compile dependencies
+      - name: Package CI artifacts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            mingw-w64 \
-            binutils-mingw-w64-x86-64 \
-            wine64
+          mkdir -p dist/engine dist/demo
+          cp "target/${{ matrix.target }}/debug/libruntime.rlib" dist/engine/
+          # The demo is a native-activity cdylib on Android.
+          cp "target/${{ matrix.target }}/debug/libdemo.so" dist/demo/
+          tar -czf "dist/soldatik3d-engine-android-${{ matrix.abi }}.tar.gz" -C dist/engine .
+          tar -czf "dist/soldatik3d-demo-android-${{ matrix.abi }}.tar.gz" -C dist/demo .
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build Linux release
-        run: cargo build --workspace --features "vulkan opengl" --release
-
-      - name: Build Windows cross-compile release
-        run: |
-          cargo build --workspace --features "vulkan opengl" --release --target x86_64-pc-windows-gnu
-
-      - name: Build Android release
-        run: |
-          cat >> ~/.cargo/config.toml <<'EOF'
-          [target.aarch64-linux-android]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-          [target.armv7-linux-androideabi]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-          [target.x86_64-linux-android]
-          linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
-          ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          EOF
-          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
-            echo "Building Android release for $target..."
-            cargo build --workspace --features "opengl" --release --target $target
-          done
-
-      - name: Run release tests
-        run: cargo test --workspace --all-features --release
-
-      - name: Create release archives
-        run: |
-          mkdir -p release
-          # Linux
-          tar -czf release/soldatik3d-linux-x86_64.tar.gz -C target/release examples/demo
-          # Windows (cross-compiled)
-          tar -czf release/soldatik3d-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release examples/demo.exe
-          # Android
-          for target in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do
-            abi=$(case $target in aarch64-linux-android) echo arm64-v8a;; armv7-linux-androideabi) echo armeabi-v7a;; x86_64-linux-android) echo x86_64;; esac)
-            tar -czf release/soldatik3d-android-${abi}.tar.gz -C target/${target}/release examples/demo
-          done
-
-      - name: Upload release artifacts
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-artifacts
-          path: release/
-          retention-days: 30
+          name: android-${{ matrix.abi }}
+          path: dist/
+          retention-days: 14

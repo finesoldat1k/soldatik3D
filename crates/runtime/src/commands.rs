@@ -6,7 +6,6 @@ use render::{Renderer, VsyncMode};
 use scene::World;
 
 use crate::console::Console;
-use crate::game::{CommandContext, Game};
 
 /// Result of a command execution.
 #[derive(Debug, Clone)]
@@ -43,7 +42,6 @@ impl Command {
         &self.name
     }
 
-    #[allow(dead_code)]
     pub fn description(&self) -> &str {
         &self.description
     }
@@ -98,14 +96,7 @@ impl CommandRegistry {
             .collect()
     }
 
-    /// Returns all registered commands for help display.
-    #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item = &Command> {
-        self.commands.values()
-    }
-
     /// Returns all registered commands for help display (owned).
-    #[allow(dead_code)]
     pub fn all(&self) -> Vec<&Command> {
         self.commands.values().collect()
     }
@@ -200,7 +191,7 @@ pub fn create_default_registry() -> CommandRegistry {
         |ctx| {
             if let Some(renderer) = &mut ctx.renderer {
                 match renderer.screenshot() {
-                    Ok(()) => ctx.console.print("screenshot saved"),
+                    Ok(()) => ctx.console.print("screenshot requested"),
                     Err(e) => ctx.console.error(format!("screenshot failed: {e}")),
                 }
             }

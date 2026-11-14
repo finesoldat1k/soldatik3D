@@ -36,7 +36,7 @@ pub mod game;
 pub use assets::{TextureData, font_atlas_rgba8, generate_environment_cubemap};
 pub use game::{CommandContext, Game, GameConfig, UpdateContext};
 pub use platform::{
-    Input, InputMap, PlatformCapabilities, TargetOS, TargetArch, WindowHints, winit,
+    Input, InputMap, PlatformCapabilities, TargetArch, TargetOS, WindowHints, winit,
 };
 pub use render::{
     BackendKind, CameraFrame, DebugView, FrameData, RenderStats, Renderer, VsyncMode, WindowSurface,
@@ -56,6 +56,32 @@ where
     G: Game + 'static,
 {
     let event_loop = winit::event_loop::EventLoop::new()?;
+    let mut app = app::App::new(game);
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+/// Runs `game` from an Android `android_main` entry point.
+///
+/// Android has no global winit application object: the [`AndroidApp`] supplied
+/// by the `android-activity` glue must be attached to the event loop builder.
+/// A game compiled as a native-activity `cdylib` exports `android_main` and
+/// forwards the app handle here.
+///
+/// [`AndroidApp`]: winit::platform::android::activity::AndroidApp
+#[cfg(target_os = "android")]
+pub fn run_android<G>(
+    game: G,
+    android_app: winit::platform::android::activity::AndroidApp,
+) -> Result<()>
+where
+    G: Game + 'static,
+{
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
+    let event_loop = winit::event_loop::EventLoop::builder()
+        .with_android_app(android_app)
+        .build()?;
     let mut app = app::App::new(game);
     event_loop.run_app(&mut app)?;
     Ok(())

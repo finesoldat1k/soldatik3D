@@ -11,3 +11,9 @@ render = { workspace = true }
 glam = { workspace = true }
 anyhow = { workspace = true }
 winit = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `winit` requires an explicit Android activity backend. Soldatik3D ships a
+# plain native-activity binary, which also keeps the build independent of the
+# Jetpack GameActivity Gradle plugin.
+winit = { workspace = true, features = ["android-native-activity"] }

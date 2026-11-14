@@ -6,6 +6,7 @@ members = [
     "crates/ui",
     "crates/render",
     "crates/platform",
+    "crates/vulkan",
     "crates/opengl",
     "crates/runtime",
     "examples/demo",
@@ -36,7 +37,7 @@ render = { path = "crates/render" }
 platform = { path = "crates/platform" }
 vulkan = { path = "crates/vulkan" }
 opengl = { path = "crates/opengl" }
-runtime = { path = "crates/runtime" }
+runtime = { path = "crates/runtime", default-features = false }
 
 [profile.dev.package."*"]
 opt-level = 3

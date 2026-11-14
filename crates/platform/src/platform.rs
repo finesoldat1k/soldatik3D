@@ -1,19 +1,15 @@
 //! Platform detection and configuration for the Soldatik3D engine.
 //!
-//! This module provides compile-time and runtime platform detection,
-//! allowing the engine to adapt its behavior across different targets.
-
-use std::env;
+//! Soldatik3D targets Linux, Windows and Android. Keeping the enum limited to
+//! the supported platforms means `match` statements in games and tools stay
+//! exhaustive without carrying dead macOS/iOS/WebAssembly branches.
 
 /// Target operating system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetOS {
     Linux,
     Windows,
-    MacOS,
     Android,
-    iOS,
-    WebAssembly,
     Unknown,
 }
 
@@ -24,39 +20,10 @@ impl TargetOS {
         return TargetOS::Linux;
         #[cfg(target_os = "windows")]
         return TargetOS::Windows;
-        #[cfg(target_os = "macos")]
-        return TargetOS::MacOS;
         #[cfg(target_os = "android")]
         return TargetOS::Android;
-        #[cfg(target_os = "ios")]
-        return TargetOS::iOS;
-        #[cfg(target_arch = "wasm32")]
-        return TargetOS::WebAssembly;
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows",
-            target_os = "macos",
-            target_os = "android",
-            target_os = "ios",
-            target_arch = "wasm32",
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android",)))]
         return TargetOS::Unknown;
-    }
-
-    /// Returns the target OS from the environment (useful for cross-compilation).
-    pub fn from_env() -> Self {
-        if let Ok(target) = env::var("CARGO_CFG_TARGET_OS") {
-            match target.as_str() {
-                "linux" => TargetOS::Linux,
-                "windows" => TargetOS::Windows,
-                "macos" => TargetOS::MacOS,
-                "android" => TargetOS::Android,
-                "ios" => TargetOS::iOS,
-                _ => TargetOS::Unknown,
-            }
-        } else {
-            Self::current()
-        }
     }
 
     /// Returns a human-readable name.
@@ -64,51 +31,46 @@ impl TargetOS {
         match self {
             TargetOS::Linux => "Linux",
             TargetOS::Windows => "Windows",
-            TargetOS::MacOS => "macOS",
             TargetOS::Android => "Android",
-            TargetOS::iOS => "iOS",
-            TargetOS::WebAssembly => "WebAssembly",
             TargetOS::Unknown => "Unknown",
         }
     }
 
     /// Whether this is a mobile platform.
     pub fn is_mobile(&self) -> bool {
-        matches!(self, TargetOS::Android | TargetOS::iOS)
+        matches!(self, TargetOS::Android)
     }
 
     /// Whether this is a desktop platform.
     pub fn is_desktop(&self) -> bool {
-        matches!(self, TargetOS::Linux | TargetOS::Windows | TargetOS::MacOS)
+        matches!(self, TargetOS::Linux | TargetOS::Windows)
     }
 
-    /// Whether this supports Vulkan natively.
+    /// Whether the platform exposes a Vulkan loader.
+    ///
+    /// Android devices commonly support Vulkan as well, but the default
+    /// Soldatik3D Android build is OpenGL ES. Use [`Self::default_backend`] to
+    /// pick the backend that is actually compiled for the current platform.
     pub fn supports_vulkan(&self) -> bool {
-        matches!(self, TargetOS::Linux | TargetOS::Windows | TargetOS::Android)
+        matches!(self, TargetOS::Linux | TargetOS::Windows)
     }
 
-    /// Whether this supports Metal.
-    pub fn supports_metal(&self) -> bool {
-        matches!(self, TargetOS::MacOS | TargetOS::iOS)
-    }
-
-    /// Whether this supports OpenGL.
+    /// Whether the platform supports OpenGL / OpenGL ES.
     pub fn supports_opengl(&self) -> bool {
-        matches!(self, TargetOS::Linux | TargetOS::Windows | TargetOS::MacOS | TargetOS::Android)
+        matches!(
+            self,
+            TargetOS::Linux | TargetOS::Windows | TargetOS::Android
+        )
     }
 
     /// Default graphics backend for this platform.
+    ///
+    /// Android builds ship the OpenGL ES backend; Desktop builds prefer
+    /// Vulkan and can fall back to OpenGL through `SOLDATIK3D_BACKEND`.
     pub fn default_backend(&self) -> render::BackendKind {
         match self {
-            TargetOS::Linux | TargetOS::Windows | TargetOS::Android => {
-                render::BackendKind::Vulkan
-            }
-            TargetOS::MacOS | TargetOS::iOS => {
-                // Metal would be preferred, but we only have Vulkan/OpenGL
-                render::BackendKind::OpenGl
-            }
-            TargetOS::WebAssembly => render::BackendKind::OpenGl,
-            TargetOS::Unknown => render::BackendKind::Vulkan,
+            TargetOS::Android => render::BackendKind::OpenGl,
+            TargetOS::Linux | TargetOS::Windows | TargetOS::Unknown => render::BackendKind::Vulkan,
         }
     }
 }
@@ -119,9 +81,6 @@ pub enum TargetArch {
     X86_64,
     AArch64,
     ARMv7,
-    RISCV64,
-    X86,
-    WASM32,
     Unknown,
 }
 
@@ -133,20 +92,7 @@ impl TargetArch {
         return TargetArch::AArch64;
         #[cfg(target_arch = "arm")]
         return TargetArch::ARMv7;
-        #[cfg(target_arch = "riscv64")]
-        return TargetArch::RISCV64;
-        #[cfg(target_arch = "x86")]
-        return TargetArch::X86;
-        #[cfg(target_arch = "wasm32")]
-        return TargetArch::WASM32;
-        #[cfg(not(any(
-            target_arch = "x86_64",
-            target_arch = "aarch64",
-            target_arch = "arm",
-            target_arch = "riscv64",
-            target_arch = "x86",
-            target_arch = "wasm32",
-        )))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm",)))]
         return TargetArch::Unknown;
     }
 
@@ -155,19 +101,12 @@ impl TargetArch {
             TargetArch::X86_64 => "x86_64",
             TargetArch::AArch64 => "aarch64",
             TargetArch::ARMv7 => "armv7",
-            TargetArch::RISCV64 => "riscv64",
-            TargetArch::X86 => "x86",
-            TargetArch::WASM32 => "wasm32",
             TargetArch::Unknown => "unknown",
         }
     }
 
     pub fn is_64bit(&self) -> bool {
-        matches!(self, TargetArch::X86_64 | TargetArch::AArch64 | TargetArch::RISCV64)
-    }
-
-    pub fn is_wasm(&self) -> bool {
-        matches!(self, TargetArch::WASM32)
+        matches!(self, TargetArch::X86_64 | TargetArch::AArch64)
     }
 }
 
@@ -182,8 +121,6 @@ pub struct PlatformCapabilities {
     pub opengl_version: Option<String>,
     /// OpenGL extensions.
     pub opengl_extensions: Vec<String>,
-    /// Metal support (macOS/iOS).
-    pub metal_supported: bool,
     /// Whether running in a container/VM.
     pub virtualized: bool,
     /// Available CPU cores.
@@ -205,6 +142,7 @@ pub struct PlatformCapabilities {
 impl PlatformCapabilities {
     /// Detects platform capabilities at runtime.
     pub fn detect() -> Self {
+        #[allow(unused_mut)]
         let mut caps = Self {
             cpu_cores: std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -212,7 +150,8 @@ impl PlatformCapabilities {
             ..Default::default()
         };
 
-        // Read /proc/cpuinfo on Linux for virtualization
+        // Read /proc/cpuinfo and /proc/meminfo on Linux for virtualization
+        // and memory information.
         #[cfg(target_os = "linux")]
         {
             if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
@@ -224,10 +163,10 @@ impl PlatformCapabilities {
             if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
                 for line in meminfo.lines() {
                     if line.starts_with("MemTotal:") {
-                        if let Some(kb_str) = line.split_whitespace().nth(1) {
-                            if let Ok(kb) = kb_str.parse::<usize>() {
-                                caps.total_memory_mb = kb / 1024;
-                            }
+                        if let Some(kb_str) = line.split_whitespace().nth(1)
+                            && let Ok(kb) = kb_str.parse::<usize>()
+                        {
+                            caps.total_memory_mb = kb / 1024;
                         }
                         break;
                     }
@@ -291,25 +230,14 @@ impl WindowHints {
     pub fn for_platform() -> Self {
         let os = TargetOS::current();
         let mut hints = Self::default();
-        
-        match os {
-            TargetOS::Android => {
-                hints.fullscreen = true;
-                hints.resizable = false;
-                hints.vsync = true;
-                hints.size = None; // Use full screen
-            }
-            TargetOS::WebAssembly => {
-                hints.size = Some((1280, 720));
-                hints.vsync = true;
-            }
-            TargetOS::MacOS => {
-                hints.high_dpi = true;
-                hints.transparent = true; // For titlebar integration
-            }
-            _ => {}
+
+        if os == TargetOS::Android {
+            hints.fullscreen = true;
+            hints.resizable = false;
+            hints.vsync = true;
+            hints.size = None; // Use the full display.
         }
-        
+
         hints.preferred_backend = Some(os.default_backend());
         hints
     }

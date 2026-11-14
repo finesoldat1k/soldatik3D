@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # shaderc-sys 0.8 vendors CMake projects with pre-3.5 policy minimums.
+  # CMake 4 otherwise refuses to configure them; older CMake ignores this.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake ninja-build git python3 \
+            libvulkan-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libgles2-mesa-dev
+          sudo apt-get install -y --no-install-recommends libshaderc-dev || \
+            echo "libshaderc-dev unavailable; shaderc will be built from source"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux
+
+      - name: Build engine (runtime)
+        run: cargo build --locked --release -p runtime --all-features
+
+      - name: Build demo game
+        run: cargo build --locked --release -p demo --all-features
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p dist/engine dist/demo
+          cp target/release/libruntime.rlib dist/engine/
+          cp target/release/demo dist/demo/
+          cat > dist/demo/README.txt <<'EOF'
+          Soldatik3D demo game (Linux x86_64)
+
+          Run ./demo from a terminal. The engine picks Vulkan by default.
+          Override it with SOLDATIK3D_BACKEND=opengl if needed.
+          Set SOLDATIK3D_VSYNC=off for uncapped frame rate.
+          EOF
+          tar -czf dist/soldatik3d-engine-linux-x86_64.tar.gz -C dist/engine .
+          tar -czf dist/soldatik3d-demo-linux-x86_64.tar.gz -C dist/demo .
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: dist/
+          retention-days: 30
+
+  windows:
+    name: Windows x86_64 (MSVC)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows
+
+      - name: Build engine (runtime)
+        run: cargo build --locked --release -p runtime --all-features
+
+      - name: Build demo game
+        run: cargo build --locked --release -p demo --all-features
+
+      - name: Package release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\engine, dist\demo | Out-Null
+          Copy-Item target\release\libruntime.rlib dist\engine\
+          Copy-Item target\release\demo.exe dist\demo\
+          @'
+          Soldatik3D demo game (Windows x86_64)
+
+          Run demo.exe from a terminal. The engine picks Vulkan by default.
+          Override it with SOLDATIK3D_BACKEND=opengl if needed.
+          Set SOLDATIK3D_VSYNC=off for uncapped frame rate.
+          '@ | Set-Content -Encoding utf8 dist\demo\README.txt
+          Compress-Archive -Force -Path dist\engine\* -DestinationPath dist\soldatik3d-engine-windows-x86_64.zip
+          Compress-Archive -Force -Path dist\demo\* -DestinationPath dist\soldatik3d-demo-windows-x86_64.zip
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: dist/
+          retention-days: 30
+
+  android:
+    name: Android ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+            linker: aarch64-linux-android29-clang
+            linker_env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+            linker: armv7a-linux-androideabi29-clang
+            linker_env: CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26c
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-android-${{ matrix.abi }}
+
+      - name: Configure NDK linker
+        run: |
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$NDK_BIN/${{ matrix.linker }}"
+          echo "${{ matrix.linker_env }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Build engine (runtime, OpenGL ES)
+        run: |
+          cargo build --locked --release -p runtime \
+            --no-default-features --features opengl \
+            --target ${{ matrix.target }}
+
+      - name: Build demo game (OpenGL ES)
+        run: |
+          cargo build --locked --release -p demo \
+            --no-default-features --features opengl \
+            --target ${{ matrix.target }}
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p dist/engine dist/demo
+          cp "target/${{ matrix.target }}/release/libruntime.rlib" dist/engine/
+          # The demo is a native-activity cdylib on Android: the host APK
+          # loads libdemo.so and android-activity calls `android_main`.
+          cp "target/${{ matrix.target }}/release/libdemo.so" dist/demo/
+          cat > dist/demo/README.txt <<EOF
+          Soldatik3D demo game (Android ${{ matrix.abi }}, API 29+)
+
+          libdemo.so is a native-activity shared library built with the
+          OpenGL ES backend. It is not a standalone executable: package it in
+          an APK whose activity is android.app.NativeActivity (or a subclass)
+          and whose manifest declares android:hasCode="false". The APK build
+          must place this file in lib/<abi>/libdemo.so and set the native
+          library name to "demo".
+          EOF
+          tar -czf "dist/soldatik3d-engine-android-${{ matrix.abi }}.tar.gz" -C dist/engine .
+          tar -czf "dist/soldatik3d-demo-android-${{ matrix.abi }}.tar.gz" -C dist/demo .
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android-${{ matrix.abi }}
+          path: dist/
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'release'
+    needs: [linux, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+
+      - name: List release assets
+        run: find release -maxdepth 2 -type f -printf '%P\n' | sort
+
+      - name: Attach assets to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/**/*.tar.gz
+            release/**/*.zip
+          fail_on_unmatched_files: true
+          prerelease: ${{ github.event.release.prerelease }}

@@ -11,9 +11,7 @@ pub mod platform;
 pub mod window;
 
 pub use input::{Input, InputMap};
-pub use platform::{
-    PlatformCapabilities, TargetOS, TargetArch, WindowHints,
-};
+pub use platform::{PlatformCapabilities, TargetArch, TargetOS, WindowHints};
 pub use window::PlatformWindow;
 
 /// Re-exported so games can use key codes, mouse buttons and window types

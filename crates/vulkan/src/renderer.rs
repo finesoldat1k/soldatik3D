@@ -268,6 +268,7 @@ pub struct VulkanRenderer {
     size: (u32, u32),
     context: VulkanContext,
     vsync: VsyncMode,
+    capture_requested: bool,
 }
 
 impl VulkanRenderer {
@@ -634,6 +635,7 @@ impl VulkanRenderer {
             size,
             context,
             vsync,
+            capture_requested: false,
         })
     }
 
@@ -701,6 +703,23 @@ impl VulkanRenderer {
                 .queue_submit(self.context.graphics_queue, &[submit], fence)?
         };
 
+        // A screenshot is captured from the image we have just rendered into.
+        // Waiting for the frame fence guarantees that the color writes are
+        // complete; the image is still owned by us until `present` below.
+        let capture_result = if self.capture_requested {
+            self.capture_requested = false;
+            match unsafe {
+                self.context
+                    .device
+                    .wait_for_fences(&[fence], true, u64::MAX)
+            } {
+                Ok(()) => self.capture_image(image_index),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            Ok(())
+        };
+
         let out_of_date = self.frame.swapchain.present(
             self.context.present_queue,
             image_index,
@@ -709,6 +728,7 @@ impl VulkanRenderer {
         if out_of_date {
             self.recreate_swapchain()?;
         }
+        capture_result?;
 
         self.stats.vertices = self.scene.total_vertices;
         self.stats.triangles = self.scene.total_vertices / 3;
@@ -733,6 +753,22 @@ impl VulkanRenderer {
     }
 
     pub fn screenshot(&mut self) -> Result<()> {
+        // Capture happens in `render` while the swapchain image is acquired.
+        self.capture_requested = true;
+        Ok(())
+    }
+
+    /// Copies the rendered swapchain image into host memory and writes a PNG.
+    ///
+    /// Called from `render` after the frame fence has been waited on and before
+    /// the image is presented, so the image is still owned by the application
+    /// and contains the frame that was just rendered.
+    fn capture_image(&mut self, image_index: u32) -> Result<()> {
+        if !self.frame.swapchain.transfer_src {
+            anyhow::bail!(
+                "the swapchain was not created with TRANSFER_SRC usage; screenshots are unsupported"
+            );
+        }
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -742,14 +778,12 @@ impl VulkanRenderer {
 
         let device = &self.context.device;
         let queue = self.context.graphics_queue;
-
-        // Get any swapchain image (they all have the same extent and format)
-        let image = self.frame.swapchain.images[0];
+        let image = self.frame.swapchain.images[image_index as usize];
         let extent = self.frame.swapchain.extent;
+        let format = self.frame.swapchain.format;
 
-        // Create staging buffer for readback
         let buffer_size = (extent.width * extent.height * 4) as u64;
-        let staging_buffer = crate::buffer::GpuBuffer::new(
+        let staging_buffer = GpuBuffer::new(
             &self.context.device,
             &self.context.instance,
             self.context.physical_device,
@@ -758,96 +792,79 @@ impl VulkanRenderer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
 
-        // Copy swapchain image to staging buffer
-        let cmd_pool =
-            crate::commands::CommandPool::new(&self.context.device, self.context.graphics_family)?;
-        let cmd_buf = cmd_pool.allocate(1)?[0];
+        let commands = ImmediateCommands::new(device, self.context.graphics_family, queue)?;
+        commands.run(|cmd_buf| {
+            let subresource = vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            unsafe {
+                // The render pass left the image in PRESENT_SRC_KHR. The
+                // application still owns it, so transition it for the copy.
+                let to_transfer = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .image(image)
+                    .subresource_range(subresource);
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&to_transfer),
+                );
 
-        unsafe {
-            device.begin_command_buffer(cmd_buf, &vk::CommandBufferBeginInfo::default())?;
+                let copy_region = vk::BufferImageCopy::default()
+                    .buffer_offset(0)
+                    .buffer_row_length(extent.width)
+                    .buffer_image_height(extent.height)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .image_extent(vk::Extent3D {
+                        width: extent.width,
+                        height: extent.height,
+                        depth: 1,
+                    });
+                device.cmd_copy_image_to_buffer(
+                    cmd_buf,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    staging_buffer.handle,
+                    std::slice::from_ref(&copy_region),
+                );
 
-            // Transition swapchain image to TRANSFER_SRC_OPTIMAL (using legacy barrier)
-            let barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                std::slice::from_ref(&barrier),
-            );
+                let to_present = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                    .image(image)
+                    .subresource_range(subresource);
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&to_present),
+                );
+            }
+            Ok(())
+        })?;
 
-            // Copy image to buffer
-            let copy_region = vk::BufferImageCopy::default()
-                .buffer_offset(0)
-                .buffer_row_length(extent.width)
-                .buffer_image_height(extent.height)
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                .image_extent(vk::Extent3D {
-                    width: extent.width,
-                    height: extent.height,
-                    depth: 1,
-                });
-            device.cmd_copy_image_to_buffer(
-                cmd_buf,
-                image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                staging_buffer.handle,
-                std::slice::from_ref(&copy_region),
-            );
-
-            // Transition back to PRESENT_SRC (using legacy barrier)
-            let barrier = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                std::slice::from_ref(&barrier),
-            );
-
-            device.end_command_buffer(cmd_buf)?;
-
-            let submit_info =
-                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd_buf));
-            device.queue_submit(queue, std::slice::from_ref(&submit_info), vk::Fence::null())?;
-            device.queue_wait_idle(queue)?;
-        }
-
-        // Read back data
         let data = unsafe {
             let ptr = device.map_memory(
                 staging_buffer.memory,
@@ -856,23 +873,31 @@ impl VulkanRenderer {
                 vk::MemoryMapFlags::empty(),
             )?;
             let slice = std::slice::from_raw_parts(ptr as *const u8, buffer_size as usize);
-            let mut vec = vec![0u8; buffer_size as usize];
-            vec.copy_from_slice(slice);
+            let vec = slice.to_vec();
             device.unmap_memory(staging_buffer.memory);
             vec
         };
 
-        // Vulkan swapchain images are in SRGB format; we need to flip vertically
-        let mut flipped = vec![0u8; buffer_size as usize];
-        for y in 0..extent.height {
-            let src_row =
-                &data[(y * extent.width * 4) as usize..((y + 1) * extent.width * 4) as usize];
-            let dst_row = &mut flipped[((extent.height - 1 - y) * extent.width * 4) as usize
-                ..((extent.height - y) * extent.width * 4) as usize];
-            dst_row.copy_from_slice(src_row);
+        // Vulkan framebuffer row 0 is the top row, which is exactly the order
+        // PNG expects; only the BGRA byte order may need swapping.
+        let bgra = matches!(
+            format,
+            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
+        );
+        let mut rgba = vec![0u8; buffer_size as usize];
+        for (src, dst) in data.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+            if bgra {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+            } else {
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+            }
+            dst[3] = src[3];
         }
 
-        // Save PNG
         let mut file = std::fs::File::create(&filename)
             .with_context(|| format!("failed to create {filename}"))?;
         let mut encoder = png::Encoder::new(&mut file, extent.width, extent.height);
@@ -882,7 +907,7 @@ impl VulkanRenderer {
             .write_header()
             .context("failed to write PNG header")?;
         writer
-            .write_image_data(&flipped)
+            .write_image_data(&rgba)
             .context("failed to write PNG image data")?;
 
         eprintln!("[engine-vulkan] screenshot saved to {filename}");

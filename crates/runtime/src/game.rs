@@ -25,9 +25,24 @@ impl Default for GameConfig {
             width: 1280,
             height: 720,
             cursor_locked: true,
-            backend: BackendKind::from_env().unwrap_or_default(),
+            backend: BackendKind::from_env().unwrap_or_else(default_backend),
             vsync: VsyncMode::from_env().unwrap_or_default(),
         }
+    }
+}
+
+/// Backend used when the game does not request one explicitly.
+///
+/// Android builds only contain the OpenGL ES backend, so selecting Vulkan
+/// there would fail at startup. Desktop builds keep Vulkan as the default.
+fn default_backend() -> BackendKind {
+    #[cfg(target_os = "android")]
+    {
+        BackendKind::OpenGl
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        BackendKind::default()
     }
 }
 
