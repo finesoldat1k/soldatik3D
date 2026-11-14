@@ -101,8 +101,21 @@ cargo build --locked -p demo --all-features
 cargo test --locked --workspace --all-features
 ```
 
-`libshaderc-dev` не обязателен: без него `shaderc-sys` соберёт библиотеку из
-исходников.
+`libshaderc-dev` содержит заголовки и библиотеки, но в Ubuntu 24.04
+`libshaderc_combined.a` из этого пакета **не является полностью объединённой
+библиотекой**: в ней нет объектов glslang/SPIRV-Tools, и линковка исполняемого
+файла падает с `undefined symbol: glslang::InitializeProcess`. CI обходит это,
+указывая `shaderc-sys` на настоящую shared-библиотеку:
+
+```bash
+mkdir -p /tmp/shaderc-lib
+ln -sf /usr/lib/x86_64-linux-gnu/libshaderc.so.1 \
+  /tmp/shaderc-lib/libshaderc_shared.so
+export SHADERC_LIB_DIR=/tmp/shaderc-lib
+```
+
+Без `libshaderc-dev` `shaderc-sys` собирает библиотеку из исходников; для
+этого нужны CMake, Ninja, Python 3 и C++17-компилятор.
 
 ### Windows
 
@@ -189,7 +202,7 @@ cargo build --locked -p runtime --no-default-features --features opengl \
 | --- | --- |
 | `CARGO_TARGET_<TRIPLE>_LINKER` | линкер для целевого триплета |
 | `CC_<TRIPLE>` / `AR_<TRIPLE>` | C-компилятор и архиватор для build-скриптов |
-| `SHADERC_LIB_DIR` | каталог с готовой `libshaderc_combined` (необязательно) |
+| `SHADERC_LIB_DIR` | каталог с `libshaderc_shared.so` (CI указывает на `/tmp/shaderc-lib`); необязательно |
 | `VULKAN_SDK` | Vulkan SDK; `shaderc-sys` попробует взять библиотеку оттуда |
 
 Имена переменных с целевым триплетом бывают в двух формах: с дефисами

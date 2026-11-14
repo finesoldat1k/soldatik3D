@@ -885,7 +885,9 @@ impl VulkanRenderer {
             vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
         );
         let mut rgba = vec![0u8; buffer_size as usize];
-        for (src, dst) in data.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        let (src_pixels, _) = data.as_chunks::<4>();
+        let (dst_pixels, _) = rgba.as_chunks_mut::<4>();
+        for (src, dst) in src_pixels.iter().zip(dst_pixels.iter_mut()) {
             if bgra {
                 dst[0] = src[2];
                 dst[1] = src[1];

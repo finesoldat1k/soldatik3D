@@ -33,12 +33,20 @@ jobs:
             build-essential pkg-config cmake ninja-build git python3 \
             libvulkan-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
             libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev \
-            libgles2-mesa-dev
-          # Optional: lets shaderc-sys reuse the distro build instead of
-          # compiling its vendored C++ sources. The build falls back to source
-          # automatically when the package is unavailable.
-          sudo apt-get install -y --no-install-recommends libshaderc-dev || \
-            echo "libshaderc-dev unavailable; shaderc will be built from source"
+            libgles2-mesa-dev libshaderc-dev
+          # Ubuntu's libshaderc-dev ships a `libshaderc_combined.a` that is
+          # not actually combined: it lacks the glslang/SPIRV-Tools members
+          # and fails only when the demo executable is linked. Point
+          # shaderc-sys at the real shared library instead (the package also
+          # provides libshaderc.so.1).
+          if [ -e /usr/lib/x86_64-linux-gnu/libshaderc.so.1 ]; then
+            mkdir -p /tmp/shaderc-lib
+            ln -sf /usr/lib/x86_64-linux-gnu/libshaderc.so.1 /tmp/shaderc-lib/libshaderc_shared.so
+            echo "SHADERC_LIB_DIR=/tmp/shaderc-lib" >> "$GITHUB_ENV"
+            echo "Using system libshaderc shared library"
+          else
+            echo "System shaderc unavailable; shaderc will be built from source"
+          fi
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

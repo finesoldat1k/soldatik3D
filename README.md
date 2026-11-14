@@ -114,8 +114,11 @@ examples/demo ──► runtime ──► scene ──► assets
   собирается как `libdemo.so` — native-activity `cdylib` с `android_main`, а
   не как отдельный исполняемый файл.
 - Для Vulkan-бэкенда на desktop `shaderc` компилирует GLSL во время запуска:
-  нужны C++17-компилятор, CMake и Python 3. В debug-сборках подключается
-  `VK_LAYER_KHRONOS_validation`, если слой установлен.
+  нужны C++17-компилятор, CMake и Python 3. На Linux можно использовать
+  системную shared-библиотеку `libshaderc` (см.
+  [`docs/CI.md`](docs/CI.md)); встроенная сборка `libshaderc_combined.a` из
+  Ubuntu 24.04 не линкуется без дополнительной настройки. В debug-сборках
+  подключается `VK_LAYER_KHRONOS_validation`, если слой установлен.
 
 macOS, iOS и WebAssembly не поддерживаются: платформенные ветки для них
 удалены из `platform`, а CI собирает только Linux, Windows и Android.
