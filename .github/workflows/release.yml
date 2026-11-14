@@ -133,7 +133,7 @@ jobs:
   android:
     name: Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -185,6 +185,45 @@ jobs:
             --no-default-features --features opengl \
             --target ${{ matrix.target }}
 
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk-version: r26c
+          cmake-version: 3.22.1
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        run: |
+          # Build native libraries first (already done above)
+          # Now build the APK using the gradle template from scripts/apk/
+          GRADLE_DIR="android/gradle"
+          mkdir -p "$GRADLE_DIR"
+          # Use the source of truth Gradle template from scripts/apk/gradle/
+          rsync -a --delete "scripts/apk/gradle/" "$GRADLE_DIR/"
+          
+          # Copy native library to jniLibs
+          ABI="${{ matrix.abi }}"
+          RUST_TARGET="${{ matrix.target }}"
+          PROFILE="release"
+          NATIVE_LIB="target/$RUST_TARGET/$PROFILE/libdemo.so"
+          JNI_LIBS_DIR="$GRADLE_DIR/app/src/main/jniLibs/$ABI"
+          mkdir -p "$JNI_LIBS_DIR"
+          cp "$NATIVE_LIB" "$JNI_LIBS_DIR/libdemo.so"
+          
+          cd "$GRADLE_DIR"
+          chmod +x gradlew
+          ./gradlew assembleRelease
+          
+          # Copy APK to dist
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          OUTPUT_APK="../../apk/app-${{ matrix.abi }}-release.apk"
+          mkdir -p ../../apk
+          cp "$APK_PATH" "$OUTPUT_APK"
+          cd ../..
+
       - name: Package release artifacts
         run: |
           mkdir -p dist/engine dist/demo
@@ -192,6 +231,8 @@ jobs:
           # The demo is a native-activity cdylib on Android: the host APK
           # loads libdemo.so and android-activity calls `android_main`.
           cp "target/${{ matrix.target }}/release/libdemo.so" dist/demo/
+          # Also copy the APK
+          cp "apk/app-${{ matrix.abi }}-release.apk" dist/demo/
           cat > dist/demo/README.txt <<EOF
           Soldatik3D demo game (Android ${{ matrix.abi }}, API 29+)
 
@@ -201,6 +242,9 @@ jobs:
           and whose manifest declares android:hasCode="false". The APK build
           must place this file in lib/<abi>/libdemo.so and set the native
           library name to "demo".
+
+          Pre-built APK: app-${{ matrix.abi }}-release.apk
+          Install with: adb install -r app-${{ matrix.abi }}-release.apk
           EOF
           tar -czf "dist/soldatik3d-engine-android-${{ matrix.abi }}.tar.gz" -C dist/engine .
           tar -czf "dist/soldatik3d-demo-android-${{ matrix.abi }}.tar.gz" -C dist/demo .

@@ -155,7 +155,7 @@ fn setup_android_ndk() {
 
 **Add `build_apk.sh`** - Copy from template.
 
-**Add Android Gradle Template** - Copy `templates/android/gradle/` to `android/gradle/`.
+**Add Android Gradle Template** - Copy from `scripts/apk/gradle/` (engine repo) or use the template's included `android/gradle/` (if created with `s3d new`).
 
 ### 6. Update .cargo/config.toml
 

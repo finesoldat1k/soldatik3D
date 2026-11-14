@@ -155,9 +155,12 @@ soldatik3d build --target android --release
 ### Manual Gradle Build
 
 ```bash
-# 1. Prepare Gradle project (from template)
+# 1. Prepare Gradle project (from template source)
 mkdir -p android/gradle
-cp -r templates/android/gradle/* android/gradle/
+# Option A: From engine repo (scripts/apk/gradle/)
+cp -r scripts/apk/gradle/* android/gradle/
+# Option B: From template (if project was created with s3d new)
+# cp -r android/gradle/ android/gradle/  # already included in template
 
 # 2. Copy native library
 mkdir -p android/gradle/app/src/main/jniLibs/arm64-v8a

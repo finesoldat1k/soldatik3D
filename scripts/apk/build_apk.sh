@@ -124,8 +124,10 @@ log "Preparing Gradle project..."
 GRADLE_DIR="android/gradle"
 mkdir -p "$GRADLE_DIR"
 
-# Copy the Gradle template
-TEMPLATE_DIR="../../../templates/android/gradle"
+# Source of truth for Gradle template location
+# Can be overridden with GRADLE_TEMPLATE_DIR env var
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_DIR="${GRADLE_TEMPLATE_DIR:-$SCRIPT_DIR/gradle}"
 if [[ -d "$TEMPLATE_DIR" ]]; then
     rsync -a --delete "$TEMPLATE_DIR/" "$GRADLE_DIR/"
 else

@@ -3,87 +3,90 @@
 ![Rust](https://img.shields.io/badge/Rust-2024-ed6b1f?logo=rust)
 ![Vulkan](https://img.shields.io/badge/Vulkan-1.2-b21b1b?logo=vulkan)
 ![OpenGL](https://img.shields.io/badge/OpenGL-3.3%20core-5586a4?logo=opengl)
+![OpenGL ES](https://img.shields.io/badge/OpenGL%20ES-3.0-green)
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
+![CI](https://github.com/finesoldat1k/soldatik3D/actions/workflows/ci.yml/badge.svg)
+![Release](https://github.com/finesoldat1k/soldatik3D/actions/workflows/release.yml/badge.svg)
+![Crates.io](https://img.shields.io/crates/v/soldatik3d?color=orange)
+![Docs](https://img.shields.io/docsrs/soldatik3d)
 
-**soldatik3D** — модульный игровой движок на Rust с двумя полноценными
-графическими бэкендами: Vulkan 1.2 и OpenGL 3.3 core. Репозиторий содержит
-сам движок и демонстрационную игру, которая использует только публичный API
-`runtime` и не знает, какой графический API выбран.
+**soldatik3D** — a modular 3D game engine in Rust with two production-ready graphics backends: **Vulkan 1.2** and **OpenGL 3.3 core / ES 3.0**. The repository contains the engine and a demonstration game that uses only the public `runtime` API, completely agnostic to the underlying graphics API.
 
-Движок собран из небольших крейтов с одной ответственностью: ассеты, сцена и
-камеры, UI, контракт рендерера, платформа, два бэкенда и рантайм-фасад.
-Демо лежит вне `crates/`, поэтому каталог `crates/` содержит только код
-движка.
+The engine is built from focused crates with single responsibilities: assets, scene & cameras, UI, renderer abstraction, platform abstraction, two graphics backends, and a runtime facade. The demo lives outside `crates/`, keeping `crates/` as pure engine code.
 
-![Сцена демо-игры](docs/screenshot.jpg)
-
----
-
-## Возможности
-
-- **Два бэкенда с одинаковым результатом**: Vulkan 1.2 (`ash` + `shaderc`) и
-  OpenGL 3.3 core (`glutin` + `glow`). Переключение одной переменной окружения
-  или одним полем `GameConfig`.
-- **Управляемый VSync**: `On`, `Off`, `Adaptive`, `Mailbox`; настраивается через
-  `GameConfig`, `SOLDATIK3D_VSYNC` и команды консоли `vsync.*`. По умолчанию
-  включён `On`; для бенчмарков используйте `SOLDATIK3D_VSYNC=off`.
-- **Кроссплатформенная сборка**: Linux x86_64, Windows x86_64 (MSVC) и Android
-  (arm64-v8a / armeabi-v7a) собираются в GitHub Actions на каждый push и
-  прикрепляются к каждому GitHub Release/prerelease.
-- **Forward PBR-рендеринг**: metallic/roughness, IBL из процедурного
-  environment cubemap, до восьми точечных источников света.
-- **Тени**: ортографическая shadow map 2048² с фильтрацией.
-- **Постобработка**: SSAO половинного разрешения, bright-pass bloom с
-  разделяемым гауссовым блюром, ACES tone mapping и гамма-коррекция.
-  HDR-пайплайн использует `R16G16B16A16_SFLOAT`.
-- **Отсечение по пирамиде видимости** для камеры и источника тени.
-- **Камеры как часть движка**: `World` и `CameraRig` позволяют спавнить
-  именованные камеры, выбирать активную, переключать следующую/предыдущую и
-  удалять их. Рантайм всегда рендерит через активную камеру.
-- **Встроенная консоль**: реестр команд, автодополнение по `Tab`, история
-  ввода, подсказки и расширение командами игры. Открывается по `F1` или `` ` ``.
-- **Immediate-mode UI** со встроенным bitmap-шрифтом: заглавные и строчные
-  `a-z`, цифры, пунктуация, панели, кнопки, статус и перекрестие.
-- **Скриншоты и диагностика**: `F12` или команда `screenshot` сохраняет кадр в
-  PNG; `SOLDATIK3D_VALIDATION=1` включает Vulkan validation layers.
-- **Кроссплатформенное окно и ввод** через `winit`, изолированные в
-  `platform`; бэкенды получают только raw handles и размер поверхности.
-- **Демо-игра** с процедурным уровнем, семью камерами, освещением,
-  коллизиями, FPS-контроллером и debug-видами.
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><strong>Vulkan Gameplay</strong></td>
+      <td align="center"><strong>OpenGL Gameplay</strong></td>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/vulkan-gameplay.png" width="400"/></td>
+      <td><img src="docs/screenshots/opengl-gameplay.png" width="400"/></td>
+    </tr>
+    <tr>
+      <td align="center"><strong>In-Game Console</strong></td>
+      <td align="center"><strong>Debug Views</strong></td>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/vulkan-console.png" width="400"/></td>
+      <td><img src="docs/screenshots/vulkan-normals.png" width="200"/><img src="docs/screenshots/vulkan-wireframe.png" width="200"/></td>
+    </tr>
+  </table>
+</div>
 
 ---
 
-## Структура репозитория
+## Features
+
+- **Dual Graphics Backends** — Vulkan 1.2 (`ash` + `shaderc`) and OpenGL 3.3 core / ES 3.0 (`glutin` + `glow`). Switch via env var or `GameConfig`.
+- **Controlled VSync** — `On`, `Off`, `Adaptive`, `Mailbox`; configurable via `GameConfig`, `SOLDATIK3D_VSYNC`, and console commands `vsync.*`. Defaults to `On`; use `SOLDATIK3D_VSYNC=off` for benchmarks.
+- **Cross-Platform Builds** — Linux x86_64, Windows x86_64 (MSVC), Android (arm64-v8a / armeabi-v7a) built in GitHub Actions on every push and attached to every GitHub Release/prerelease.
+- **Forward PBR Rendering** — Metallic/roughness workflow, IBL from procedural environment cubemap, up to 8 point lights.
+- **Shadows** — Orthographic shadow map 2048² with PCF filtering.
+- **Post-Processing** — Half-res SSAO, bright-pass bloom with separable Gaussian blur, ACES tone mapping and gamma correction. HDR pipeline uses `R16G16B16A16_SFLOAT`.
+- **Frustum Culling** — Camera and light frustum culling for optimal draw calls.
+- **Cameras as Engine Citizens** — `World` and `CameraRig` allow spawning named cameras, selecting active, cycling next/prev, and removing them. Runtime always renders through the active camera.
+- **Built-In Developer Console** — Command registry, Tab completion, input history, hints, and extensible with game commands. Opens with `F1` or `` ` ``.
+- **Immediate-Mode UI** — Built-in bitmap font (uppercase/lowercase `a-z`, digits, punctuation), panels, buttons, status overlays, crosshair.
+- **Screenshots & Diagnostics** — `F12` or `screenshot` command saves current frame as PNG; `SOLDATIK3D_VALIDATION=1` enables Vulkan validation layers.
+- **Cross-Platform Window & Input** — Via `winit`, isolated in `platform` crate; backends receive only raw handles and surface size.
+- **Demo Game** — Procedural level, 7 cameras, lighting, collisions, FPS controller, debug views.
+
+---
+
+## Repository Structure
 
 ```text
 soldatik3D/
 ├── .cargo/
-│   └── config.toml   # профили сборки; кросс-линкеры задаются в CI/скрипте
+│   └── config.toml       # Build profiles; cross-linkers set in CI/scripts
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml    # Linux + Windows + Android на каждый push/PR
-│       └── release.yml
+│       ├── ci.yml        # Linux + Windows + Android on every push/PR
+│       └── release.yml   # Release builds + APK packaging
 ├── crates/
-│   ├── assets/       # текстуры, bitmap-шрифт, environment cubemap
-│   ├── scene/        # Camera, CameraRig, World, Mesh, Material, Light, Scene
-│   ├── ui/           # UiDrawList и UiVertex для immediate-mode UI
-│   ├── render/       # Renderer, BackendKind, FrameData, WindowSurface
-│   ├── platform/     # winit: окно, ввод, raw handles, TargetOS
-│   ├── vulkan/       # Vulkan-бэкенд, пайплайны и GLSL-шейдеры
-│   ├── opengl/       # OpenGL-бэкенд, FBO-пайплайн и GLSL-шейдеры
-│   └── runtime/      # фасад: Game trait, event loop, World, консоль, фабрика
+│   ├── assets/           # Textures, bitmap font, environment cubemap
+│   ├── scene/            # Camera, CameraRig, World, Mesh, Material, Light, Scene
+│   ├── ui/               # UiDrawList and UiVertex for immediate-mode UI
+│   ├── render/           # Renderer, BackendKind, FrameData, WindowSurface
+│   ├── platform/         # winit: window, input, raw handles, TargetOS
+│   ├── vulkan/           # Vulkan backend, pipelines, GLSL shaders
+│   ├── opengl/           # OpenGL backend, FBO pipeline, GLSL shaders
+│   ├── runtime/          # Facade: Game trait, event loop, World, console, factory
+│   └── s3d/              # CLI tool: project creation, building, exporting
 ├── examples/
-│   └── demo/         # демонстрационная игра (package `demo`)
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── CI.md         # сборка, кросс-компиляция и GitHub Actions
-│   ├── screenshot.jpg
-│   └── console.jpg
-├── cross_build.sh    # локальная сборка Linux/Windows/Android
-└── Cargo.toml        # workspace
+│   └── demo/             # Demo game (package `demo`)
+├── templates/
+│   ├── game-project/     # Game project template (Cargo.toml, build.rs, lib.rs, build_apk.sh)
+│   └── android/gradle/   # Android Gradle template with NativeActivity
+├── docs/                 # Full documentation (guides, API reference, examples)
+├── cross_build.sh        # Local cross-compilation Linux/Windows/Android
+├── Cargo.toml            # Workspace
+└── LICENSE               # GPL-3.0
 ```
 
-Граф зависимостей:
+Dependency graph:
 
 ```text
 examples/demo ──► runtime ──► scene ──► assets
@@ -95,35 +98,21 @@ examples/demo ──► runtime ──► scene ──► assets
                      └─► opengl ── (optional feature)
 ```
 
-`demo` зависит только от `runtime` и `anyhow`. `vulkan` и `opengl` не знают о
-`winit` и получают `render::WindowSurface` с raw handles. Оба бэкенда
-реализуют один трейт `render::Renderer`. Подробности —
-в [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+`demo` depends only on `runtime` and `anyhow`. `vulkan` and `opengl` don't know about `winit` and receive `render::WindowSurface` with raw handles. Both backends implement one trait `render::Renderer`. Details in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## Требования
+## Requirements
 
-- **Rust stable** (edition 2024; в CI используется `dtolnay/rust-toolchain@stable`).
-- **Linux**: Vulkan loader + ICD, OpenGL 3.3 и EGL/GLX, заголовки X11/Wayland
-  для `winit`/`glutin`.
-- **Windows**: toolchain MSVC (Visual Studio Build Tools с C++), драйвер
-  Vulkan, OpenGL 3.3 через WGL/EGL.
-- **Android**: NDK r26c (или новее), API 29+, OpenGL ES 3.0. Android-сборка
-  использует только OpenGL ES; Vulkan-бэкенд в неё не компилируется. Демо
-  собирается как `libdemo.so` — native-activity `cdylib` с `android_main`, а
-  не как отдельный исполняемый файл.
-- Для Vulkan-бэкенда на desktop `shaderc` компилирует GLSL во время запуска:
-  нужны C++17-компилятор, CMake и Python 3. На Linux можно использовать
-  системную shared-библиотеку `libshaderc` (см.
-  [`docs/CI.md`](docs/CI.md)); встроенная сборка `libshaderc_combined.a` из
-  Ubuntu 24.04 не линкуется без дополнительной настройки. В debug-сборках
-  подключается `VK_LAYER_KHRONOS_validation`, если слой установлен.
+- **Rust stable** (edition 2024; CI uses `dtolnay/rust-toolchain@stable`).
+- **Linux**: Vulkan loader + ICD, OpenGL 3.3 + EGL/GLX, X11/Wayland headers for `winit`/`glutin`.
+- **Windows**: MSVC toolchain (Visual Studio Build Tools with C++), Vulkan driver, OpenGL 3.3 via WGL/EGL.
+- **Android**: NDK r26c+, API 29+, OpenGL ES 3.0. Android builds use only OpenGL ES; Vulkan backend is not compiled for Android. Demo builds as `libdemo.so` — native-activity `cdylib` with `android_main`, not a standalone executable.
+- For Vulkan backend on desktop, `shaderc` compiles GLSL at runtime: needs C++17 compiler, CMake, Python 3. On Linux, system `libshaderc` shared library is preferred (see [`docs/CI.md`](docs/CI.md)); Ubuntu's `libshaderc_combined.a` is incomplete and requires a workaround. Debug builds enable `VK_LAYER_KHRONOS_validation` if available.
 
-macOS, iOS и WebAssembly не поддерживаются: платформенные ветки для них
-удалены из `platform`, а CI собирает только Linux, Windows и Android.
+macOS, iOS, and WebAssembly are **not supported**: platform branches removed from `platform`, CI builds only Linux, Windows, and Android.
 
-Arch Linux:
+Arch Linux quick install:
 
 ```bash
 sudo pacman -S rust vulkan-icd-loader vulkan-validation-layers cmake python mesa
@@ -131,214 +120,363 @@ sudo pacman -S rust vulkan-icd-loader vulkan-validation-layers cmake python mesa
 
 ---
 
-## Быстрый старт
+## Quick Start
 
 ```bash
 git clone https://github.com/finesoldat1k/soldatik3D
 cd soldatik3D
 
-# движок и игра собираются отдельно
+# Build engine and demo separately
 cargo build --locked -p runtime --all-features
 cargo build --locked -p demo --all-features
 
-# debug-запуск, оба бэкенда включены
+# Run demo (Vulkan by default)
 cargo run -p demo
 
-# release-сборка
+# Release build
 cargo run --release -p demo
 ```
 
-Те же команды выполняются в GitHub Actions для Linux, Windows и Android на
-каждый push; подробности — в [`docs/CI.md`](docs/CI.md).
+Same commands run in GitHub Actions for Linux, Windows, and Android on every push. Details in [`docs/CI.md`](docs/CI.md).
 
-### Выбор графического бэкенда
-
-По умолчанию используется Vulkan. Бэкенд можно выбрать переменной окружения:
+### Choose Graphics Backend
 
 ```bash
-SOLDATIK3D_BACKEND=vulkan cargo run -p demo
+# Vulkan (default)
+cargo run -p demo
+
+# OpenGL
 SOLDATIK3D_BACKEND=opengl cargo run -p demo
-```
 
-Или в коде игры:
-
-```rust
+# In code
 use runtime::{BackendKind, GameConfig};
-
 let config = GameConfig::default().with_backend(BackendKind::OpenGl);
 ```
 
-`runtime` включает оба бэкенда через features `vulkan` и `opengl` (обе
-включены по умолчанию). Если движок используется как зависимость, ненужные
-бэкенды отключаются в манифесте:
+`runtime` enables both backends via features `vulkan` and `opengl` (both on by default). Disable unused backends when using as a dependency:
 
 ```toml
 runtime = { path = "../soldatik3D/crates/runtime", default-features = false, features = ["opengl"] }
 ```
 
-Выбранный, но не скомпилированный бэкенд даёт понятную ошибку при запуске.
+---
+
+## s3d — Development Toolchain
+
+The engine includes **`s3d`**, a built-in CLI tool for project management. It's compiled with the engine and included in release artifacts per platform — no separate installation needed.
+
+```bash
+# Create a new game project
+s3d new my_game
+cd my_game
+
+# Run on desktop
+cargo run
+
+# Build for all platforms
+s3d build --target all --release
+
+# Build Android APK
+s3d apk arm64-v8a --release
+
+# Export distributable packages
+s3d export --platforms linux,windows,android --out-dir dist
+
+# Validate project configuration
+s3d check --target android
+
+# Show engine info
+s3d info
+```
+
+### s3d Commands
+
+| Command | Description |
+|---------|-------------|
+| `s3d new <name>` | Create new game project from template |
+| `s3d build --target <linux|windows|android|all> [--release]` | Build for platform(s) |
+| `s3d run [--target linux] [--release]` | Run on desktop |
+| `s3d apk <abi> [--release]` | Build Android APK (arm64-v8a, armeabi-v7a, x86_64) |
+| `s3d export [--platforms linux,windows,android] [--out-dir dist]` | Export distributable packages |
+| `s3d check [--target <platform>]` | Validate project configuration |
+| `s3d info` | Show engine version and capabilities |
+| `s3d engine version|link|update` | Engine management |
+
+The CLI is built from source with the engine and bundled in release artifacts — no separate `cargo install` needed.
 
 ---
 
-## API движка
+## API Overview
 
-Игра реализует `Game`, создаёт `World` и получает его каждый кадр. Камеры
-спавнятся и выбираются через движок; рендер, ввод, окно и консоль остаются
-внутри `runtime`.
+The game implements the `Game` trait with three methods:
 
 ```rust
-use runtime::{glam::Vec3, run, Camera, CameraRig, Game, GameConfig, Scene, UpdateContext, World};
+use soldatik3d::{run, Game, GameConfig, UpdateContext, World};
 
 struct MyGame;
 
 impl Game for MyGame {
     fn config(&self) -> GameConfig {
-        GameConfig::default().with_title("My game")
+        GameConfig::default().with_title("My Game")
     }
 
     fn create_world(&mut self) -> World {
-        let scene = Scene::new(Default::default());
-        let mut cameras = CameraRig::empty();
-        cameras.spawn("player", Camera::at(Vec3::new(0.0, 2.0, 8.0)));
-        cameras.spawn("overview", Camera::at(Vec3::new(20.0, 25.0, 30.0)));
-        World::with_cameras(scene, cameras)
+        let mut world = World::default();
+        world.add_camera("player".into(), Camera::new()
+            .with_position(Vec3::new(0.0, 2.0, 5.0))
+            .with_fov_y(70.0));
+        world.add_light(Light::directional()
+            .with_direction(Vec3::new(-0.5, -1.0, -0.3).normalize())
+            .with_intensity(3.0));
+        world
     }
 
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // ctx.world.active_camera() / active_camera_mut()
-        // ctx.world.spawn_camera(...), select_camera(...), select_next_camera()
+        // ctx.input, ctx.world, ctx.renderer, ctx.console, ctx.commands
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    run(MyGame)
+fn main() -> anyhow::Result<()> { run(MyGame) }
+
+// Android entry point (required for Android builds)
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub fn android_main(app: soldatik3d::winit::platform::android::activity::AndroidApp) {
+    soldatik3d::run_android(MyGame, app).unwrap();
 }
 ```
 
-`UpdateContext` также содержит `dt`, `input`, `ui`, `stats`, `viewport` и
-`console_open`. Для собственных команд игра реализует `Game::command` и
-`Game::command_help`.
+### Core Types
 
-### Камеры и консоль
-
-| Команда | Действие |
-| --- | --- |
-| `camera.list` | список камер с ID, именами и позициями |
-| `camera.select <name\|id>` | сделать камеру активной (`overview`, `cam-6`, `6`) |
-| `camera.next` / `camera.prev` | переключить камеру по кругу |
-| `camera.spawn <name> [x y z] [yaw] [pitch]` | создать камеру |
-| `camera.remove <name\|id>` | удалить камеру (кроме последней) |
-| `camera.rename <name>` | переименовать активную камеру |
-| `camera.info` | позиция, углы, FOV и диапазон активной камеры |
-| `camera.set x y z [yaw] [pitch]` | переместить активную камеру |
-| `help`, `clear`, `quit`, `backend` | справка, очистка, выход, текущий бэкенд |
-
-Демо добавляет команды `debug.lit`, `debug.normals`, `debug.depth`,
-`debug.cycle`, `player.camera`, `player.teleport`, `player.fly` и
-`player.reset`.
-
-![Консоль и список камер](docs/console.jpg)
+| Type | Description |
+|------|-------------|
+| `GameConfig` | Window size, title, VSync, backend, fullscreen |
+| `World` | Cameras, entities, lights |
+| `Camera` | Position, target, FOV, aspect, near/far |
+| `Light` | Directional, Point, Spot, Ambient with shadows |
+| `Material` | PBR: albedo, normal, roughness, metallic, emissive |
+| `Mesh` | Cube, sphere, cylinder, plane, quad, GLTF loading |
+| `Renderer` | Render, resize, screenshot, VSync, debug views |
+| `Input` | Keyboard, mouse, gamepad, touch (Android) |
+| `Console` | Print, error, warning, command execution |
+| `CommandRegistry` | Register custom commands with args |
 
 ---
 
-## Управление в демо
+## Demo Controls
 
-| Клавиши | Действие |
-| --- | --- |
-| `WASD` | движение |
-| `Shift` | бег |
-| `Space` | прыжок, в полёте — вверх |
-| `Ctrl` | вниз в режиме полёта |
-| `F` | включить/выключить полёт |
-| `Мышь` | обзор |
-| `Tab` | освободить/захватить курсор; в открытой консоли — автодополнение |
-| `F1` / `` ` `` | открыть/закрыть консоль |
-| `Enter` | выполнить команду |
-| `↑` / `↓` | история команд |
-| `F12` | сохранить скриншот в PNG |
-| `Esc` | закрыть консоль, освободить курсор или выйти |
-| `F2` / `F3` / `F4` | lit / normals / depth |
-
-Игрок управляет камерой `player`, только когда она активна. Через консоль
-можно переключиться на пресеты `corridor`, `left-hall`, `right-hall`, `pool`,
-`final-hall` и `overview`.
+| Key | Action |
+|-----|--------|
+| `WASD` | Move |
+| `Shift` | Sprint |
+| `Space` | Jump / Fly up |
+| `Ctrl` | Fly down |
+| `F` | Toggle flight mode |
+| Mouse | Look around |
+| `Tab` | Release/grab cursor (completion in console) |
+| `F1` / `` ` `` | Toggle console |
+| `Enter` | Execute command |
+| `↑` / `↓` | Command history |
+| `F12` | Screenshot |
+| `Esc` | Close console / release cursor / exit |
+| `F2` / `F3` / `F4` | Lit / Normals / Depth |
 
 ---
 
-## Переменные окружения
+## Console Commands
 
-| Переменная | Назначение |
-| --- | --- |
-| `SOLDATIK3D_BACKEND=vulkan\|opengl` | выбрать графический бэкенд |
-| `SOLDATIK3D_VSYNC=on\|off\|adaptive\|mailbox` | режим вертикальной синхронизации |
-| `SOLDATIK3D_MAX_FRAMES=<n>` | отрендерить `n` кадров и корректно завершиться |
-| `SOLDATIK3D_COMMANDS="cmd1;cmd2"` | выполнить команды консоли после старта |
-| `SOLDATIK3D_CONSOLE=1` | открыть консоль при старте |
-| `SOLDATIK3D_DEBUG_VIEW=normals\|depth` | стартовый debug-вид демо |
-| `SOLDATIK3D_VALIDATION=1` | включить Vulkan validation layers |
+Built-in commands (type `help` in console):
 
-По умолчанию VSync включён (`On`). Для замера максимального FPS:
+| Command | Description |
+|---------|-------------|
+| `help` | List all commands |
+| `clear` | Clear console |
+| `quit` / `exit` | Exit game |
+| `backend` | Show current backend |
+| `backend vulkan\|opengl` | Switch backend |
+| `vsync.on\|off\|adaptive\|mailbox` | Set VSync mode |
+| `vsync.toggle` | Toggle VSync |
+| `vsync.current` | Show current VSync |
+| `screenshot` | Save PNG |
+| `camera.list` | List cameras |
+| `camera.select <name>` | Switch camera |
+| `camera.spawn <name> [x y z] [yaw] [pitch]` | Create camera |
+| `camera.remove <name>` | Delete camera |
+| `debug.lit` | Normal rendering |
+| `debug.normals` | Visualize normals |
+| `debug.depth` | Visualize depth |
+| `debug.wireframe` | Wireframe overlay |
 
-```bash
-SOLDATIK3D_VSYNC=off cargo run --release -p demo
+Add custom commands in your game:
+
+```rust
+ctx.commands.register(Command::new(
+    "teleport",
+    "Teleport to coordinates: teleport <x> <y> <z>",
+    |ctx| {
+        let args = ctx.args;
+        if args.len() != 3 { return CommandResult::Err("Usage: teleport <x> <y> <z>".into()); }
+        let pos = Vec3::new(args[0].parse()?, args[1].parse()?, args[2].parse()?);
+        // teleport logic
+        CommandResult::Ok(Some(format!("Teleported to {:?}", pos)))
+    },
+));
 ```
 
-Режим можно переключать на ходу командами `vsync.on`, `vsync.off`,
-`vsync.adaptive`, `vsync.mailbox`, `vsync.toggle` и `vsync.current`.
+---
 
-Пример автоматической проверки камер и консоли:
+## Environment Variables
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `SOLDATIK3D_BACKEND` | `vulkan`, `opengl` | auto | Force graphics backend |
+| `SOLDATIK3D_VSYNC` | `on`, `off`, `adaptive`, `mailbox` | `on` | VSync mode |
+| `SOLDATIK3D_MAX_FRAMES` | `<u64>` | none | Auto-exit after N frames |
+| `SOLDATIK3D_COMMANDS` | `"cmd1;cmd2"` | `""` | Startup commands |
+| `SOLDATIK3D_CONSOLE` | `1`, `0` | `0` | Open console at startup |
+| `SOLDATIK3D_DEBUG_VIEW` | `normals`, `depth`, `wireframe` | none | Initial debug view |
+| `SOLDATIK3D_VALIDATION` | `1`, `0` | `0` | Vulkan validation layers |
+
+---
+
+## Building & Distribution
+
+### Local Development
 
 ```bash
-SOLDATIK3D_BACKEND=opengl \
-SOLDATIK3D_CONSOLE=1 \
-SOLDATIK3D_COMMANDS="camera.list;camera.select overview;camera.info" \
-SOLDATIK3D_MAX_FRAMES=60 \
+# Debug
 cargo run -p demo
+
+# Release
+cargo build --release -p demo
+
+# Run with specific backend
+SOLDATIK3D_BACKEND=opengl cargo run -p demo
+
+# Benchmark (no VSync, auto-exit)
+SOLDATIK3D_VSYNC=off SOLDATIK3D_MAX_FRAMES=100 cargo run --release -p demo
+```
+
+### Cross-Compilation
+
+```bash
+# Windows from Linux (MinGW, OpenGL only)
+./cross_build.sh windows --release
+
+# Android (requires NDK)
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+./cross_build.sh android arm64-v8a --release
+./cross_build.sh android armeabi-v7a --release
+
+# All platforms
+./cross_build.sh all --release
+```
+
+### Android APK
+
+```bash
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+# Build native libraries + APK
+s3d apk arm64-v8a --release
+s3d apk armeabi-v7a --release
+# Or manually:
+./build_apk.sh arm64-v8a --release
+```
+
+### Export All Platforms
+
+```bash
+s3d export --platforms linux,windows,android --out-dir dist
+# Creates:
+# dist/my_game-linux-x86_64.tar.gz
+# dist/my_game-windows-x86_64.zip
+# dist/my_game-android-arm64-v8a.apk
+# dist/my_game-android-armeabi-v7a.apk
+```
+
+### GitHub Actions CI/CD
+
+- **CI** (`.github/workflows/ci.yml`): Runs on every push/PR — Linux, Windows, Android builds, clippy, tests, rustdoc.
+- **Release** (`.github/workflows/release.yml`): Triggers on GitHub Release publish — builds release artifacts for all platforms, builds Android APKs, attaches all artifacts to the release.
+
+Create a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+# Then create GitHub Release from the tag (can mark as pre-release)
 ```
 
 ---
 
-## Разработка
+## Documentation
 
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets --all-features
-cargo build -p runtime --all-features
-cargo build -p demo --all-features
-cargo test --workspace --all-features
-cargo doc --workspace --no-deps --all-features --open
-```
+Full documentation in [`docs/`](docs/):
 
-Smoke-тест обоих бэкендов без ручного закрытия окна:
-
-```bash
-SOLDATIK3D_BACKEND=vulkan SOLDATIK3D_MAX_FRAMES=3 cargo run -p demo
-SOLDATIK3D_BACKEND=opengl SOLDATIK3D_MAX_FRAMES=3 cargo run -p demo
-```
-
-Локальная кросс-сборка:
-
-```bash
-./cross_build.sh linux
-./cross_build.sh windows          # MinGW-w64, только OpenGL
-ANDROID_NDK_HOME=~/android-ndk-r26c ./cross_build.sh android arm64-v8a
-```
-
-Android-демо — это `libdemo.so`, а не самостоятельный бинарник. Для запуска
-нужен APK-хост с activity `android.app.NativeActivity`, `android:hasCode="false"`,
-файлом `lib/<abi>/libdemo.so` и meta-data `android.app.lib_name="demo"`.
-Подробности — в [`docs/CI.md`](docs/CI.md).
-
-GitHub Actions запускает `CI` на каждый push/PR и `Release` при публикации
-GitHub Release, включая prerelease. Полное описание job'ов, артефактов и
-требований к NDK — в [`docs/CI.md`](docs/CI.md).
-
-Шейдеры Vulkan компилируются `shaderc` при запуске из `crates/vulkan/shaders/`.
-OpenGL-шейдеры лежат в `crates/opengl/shaders/` и также встроены в бинарник.
+| Section | Files |
+|---------|-------|
+| **Getting Started** | [Quick Start](docs/getting-started/quick-start.md) • [Installation](docs/getting-started/installation.md) • [Project Structure](docs/getting-started/project-structure.md) • [First Game Tutorial](docs/getting-started/first-game.md) |
+| **Guides** | [Architecture](docs/guides/architecture.md) • [Game Loop](docs/guides/game-loop.md) • [Linux](docs/guides/linux.md) • [Windows](docs/guides/windows.md) • [Android](docs/guides/android.md) • [Cross-Compilation](docs/guides/cross-compilation.md) |
+| **API Reference** | [Runtime](docs/api/runtime.md) • [Rendering](docs/api/rendering.md) • [Scene](docs/api/scene.md) • [Input](docs/api/input.md) • [UI/Console](docs/api/ui.md) • [Assets](docs/api/assets.md) • [Platform](docs/api/platform.md) |
+| **Examples** | [Basic](docs/examples/basic.md) • [Advanced](docs/examples/advanced.md) • [Platform-Specific](docs/examples/platform-specific.md) |
+| **Reference** | [CLI](docs/reference/cli.md) • [Console Commands](docs/reference/cli-commands.md) • [Configuration](docs/reference/configuration.md) • [Changelog](docs/reference/changelog.md) • [Migration](docs/reference/migration.md) |
 
 ---
 
-## Лицензия
+## Roadmap
 
-Проект распространяется под лицензией **GNU General Public License v3.0
-(GPLv3)**. Подробности — в файле [LICENSE](LICENSE).
+### v0.2.0 — Audio & Physics
+- [ ] Audio system (rodio integration: music, SFX, spatial audio)
+- [ ] Physics integration (rapier: rigid bodies, colliders, joints)
+- [ ] Animation system (skinned meshes, skeletal animation)
+- [ ] Particle system (GPU compute-based)
+- [ ] Asset hot-reload (dev workflow)
+
+### v0.3.0 — Networking & Scripting
+- [ ] Networking (bevy_net / tokio: client-server, rollback netcode)
+- [ ] Scripting (Lua via mlua: gameplay logic, modding)
+- [ ] Visual scripting / node editor (editor UI)
+- [ ] Advanced post-processing (DOF, motion blur, SSR)
+- [ ] GPU-driven rendering (meshlets, frustum culling)
+
+### v0.4.0 — Platform Expansion
+- [ ] macOS (Metal backend)
+- [ ] iOS (Metal backend)
+- [ ] WebGPU backend (wasm target)
+- [ ] Console targets (via middleware)
+
+### Ongoing
+- [ ] Editor integration (level editor, material editor)
+- [ ] Performance profiling tools (Tracy, custom GPU timers)
+- [ ] More built-in shaders (water, foliage, skin)
+- [ ] Documentation improvements
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run `cargo fmt --all && cargo clippy --workspace --all-targets --all-features && cargo test --workspace --all-features`
+5. Submit a PR
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed guidelines.
+
+---
+
+## License
+
+**GNU General Public License v3.0 (GPLv3)** — see [LICENSE](LICENSE) for details.
+
+---
+
+## Community
+
+- **Issues**: [GitHub Issues](https://github.com/finesoldat1k/soldatik3D/issues) — bugs, feature requests
+- **Discussions**: [GitHub Discussions](https://github.com/finesoldat1k/soldatik3D/discussions) — questions, ideas, showcase
+- **Wiki**: [GitHub Wiki](https://github.com/finesoldat1k/soldatik3D/wiki) — community guides
+
+---
+
+*Built with ❤️ in Rust. Soldatik3D — your game, your rules.*

@@ -248,18 +248,19 @@ fn cmd_new(name: String, dir: Option<PathBuf>, template: Option<String>) -> Resu
 
 fn find_template_dir() -> Result<PathBuf> {
     let mut candidates = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../templates/game-project"),
-        PathBuf::from("/usr/share/s3d/templates/game-project"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../templates/game"),
+        PathBuf::from("/usr/share/s3d/templates/game"),
         dirs::data_dir()
-            .map(|d| d.join("s3d/templates/game-project"))
+            .map(|d| d.join("s3d/templates/game"))
             .unwrap_or_default(),
     ];
 
     // Also check relative to the current executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("../templates/game-project"));
-            candidates.push(exe_dir.join("../../templates/game-project"));
+            candidates.push(exe_dir.join("../templates/game"));
+            candidates.push(exe_dir.join("../../templates/game"));
+            candidates.push(exe_dir.join("../templates/game"));
         }
     }
 

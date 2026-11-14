@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+                                                        й#!/usr/bin/env bash
 # Build the Soldatik3D engine and the demo game for the supported platforms.
 #
 # Usage:
