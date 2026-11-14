@@ -94,6 +94,12 @@ build_engine_and_demo() {
 
 build_linux() {
     build_engine_and_demo "dist/linux-x86_64" "" --all-features
+    # Copy required shared libraries for portable distribution
+    local out_dir="dist/linux-x86_64"
+    cp /usr/lib/x86_64-linux-gnu/libshaderc.so.1 "$out_dir/" 2>/dev/null || \
+      cp /usr/lib/libshaderc.so.1 "$out_dir/" 2>/dev/null || true
+    cp /usr/lib/x86_64-linux-gnu/libvulkan.so.1 "$out_dir/" 2>/dev/null || true
+    log "Copied shared libraries to $out_dir"
 }
 
 build_windows() {

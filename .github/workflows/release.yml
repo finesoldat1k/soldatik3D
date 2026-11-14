@@ -58,9 +58,13 @@ jobs:
           key: release-linux
 
       - name: Build engine (runtime)
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
         run: cargo build --locked --release -p runtime --all-features
 
       - name: Build demo game
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
         run: cargo build --locked --release -p demo --all-features
 
       - name: Package release artifacts
@@ -68,12 +72,25 @@ jobs:
           mkdir -p dist/engine dist/demo
           cp target/release/libruntime.rlib dist/engine/
           cp target/release/demo dist/demo/
+          # Copy required shared libraries for portable distribution
+          # libshaderc is needed for Vulkan backend shader compilation
+          cp /usr/lib/x86_64-linux-gnu/libshaderc.so.1 dist/demo/ 2>/dev/null || \
+            cp /usr/lib/libshaderc.so.1 dist/demo/ 2>/dev/null || true
+          # Vulkan loader
+          cp /usr/lib/x86_64-linux-gnu/libvulkan.so.1 dist/demo/ 2>/dev/null || true
           cat > dist/demo/README.txt <<'EOF'
           Soldatik3D demo game (Linux x86_64)
 
           Run ./demo from a terminal. The engine picks Vulkan by default.
           Override it with SOLDATIK3D_BACKEND=opengl if needed.
           Set SOLDATIK3D_VSYNC=off for uncapped frame rate.
+          
+          Required libraries (included):
+          - libshaderc.so.1 (Vulkan shader compilation)
+          - libvulkan.so.1 (Vulkan loader)
+          
+          The binary uses \$ORIGIN rpath, so libraries in the same directory
+          will be found automatically. Just run ./demo
           EOF
           tar -czf dist/soldatik3d-engine-linux-x86_64.tar.gz -C dist/engine .
           tar -czf dist/soldatik3d-demo-linux-x86_64.tar.gz -C dist/demo .

@@ -25,3 +25,7 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 debug = false
+# Use $ORIGIN rpath so the binary finds shared libraries in the same directory
+# This makes the binary portable - just ship the binary + libshaderc.so.1 together
+# Note: rustflags in profile requires unstable feature, so use RUSTFLAGS env var instead
+# Set via: RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
