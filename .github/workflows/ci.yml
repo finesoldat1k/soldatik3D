@@ -192,12 +192,53 @@ jobs:
             --no-default-features --features opengl \
             --target ${{ matrix.target }}
 
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk-version: r26c
+          cmake-version: 3.22.1
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        run: |
+          # Build native libraries first (already done above)
+          # Now build the APK using the gradle template
+          GRADLE_DIR="android/gradle"
+          mkdir -p "$GRADLE_DIR"
+          # Use the source of truth Gradle template from scripts/apk/
+          rsync -a --delete "scripts/apk/gradle/" "$GRADLE_DIR/"
+          
+          # Copy native library to jniLibs
+          ABI="${{ matrix.abi }}"
+          RUST_TARGET="${{ matrix.target }}"
+          PROFILE="debug"
+          NATIVE_LIB="target/$RUST_TARGET/$PROFILE/libdemo.so"
+          JNI_LIBS_DIR="$GRADLE_DIR/app/src/main/jniLibs/$ABI"
+          mkdir -p "$JNI_LIBS_DIR"
+          cp "$NATIVE_LIB" "$JNI_LIBS_DIR/libdemo.so"
+          
+          cd "$GRADLE_DIR"
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          
+          # Copy APK to dist
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          OUTPUT_APK="../../apk/app-${{ matrix.abi }}-debug.apk"
+          mkdir -p ../../apk
+          cp "$APK_PATH" "$OUTPUT_APK"
+          cd ../..
+
       - name: Package CI artifacts
         run: |
           mkdir -p dist/engine dist/demo
           cp "target/${{ matrix.target }}/debug/libruntime.rlib" dist/engine/
           # The demo is a native-activity cdylib on Android.
           cp "target/${{ matrix.target }}/debug/libdemo.so" dist/demo/
+          # Also copy the APK
+          cp "apk/app-${{ matrix.abi }}-debug.apk" dist/demo/
           tar -czf "dist/soldatik3d-engine-android-${{ matrix.abi }}.tar.gz" -C dist/engine .
           tar -czf "dist/soldatik3d-demo-android-${{ matrix.abi }}.tar.gz" -C dist/demo .
 
