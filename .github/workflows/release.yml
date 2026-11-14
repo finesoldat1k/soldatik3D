@@ -59,12 +59,12 @@ jobs:
 
       - name: Build engine (runtime)
         env:
-          RUSTFLAGS: "-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
+          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$$ORIGIN -C link-arg=-Wl,--enable-new-dtags'
         run: cargo build --locked --release -p runtime --all-features
 
       - name: Build demo game
         env:
-          RUSTFLAGS: "-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
+          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$$ORIGIN -C link-arg=-Wl,--enable-new-dtags'
         run: cargo build --locked --release -p demo --all-features
 
       - name: Package release artifacts
