@@ -1,95 +1,16 @@
-# Platform API Reference
+# Platform API
 
-Complete API documentation for platform abstraction, window management, and platform detection.
-
-## Window Management
-
-### WindowHints
+The `platform` crate owns `winit`, creates the window and aggregates input. Its
+public types are re-exported by `runtime`.
 
 ```rust
-pub struct WindowHints {
-    /// Window can be resized by user
-    pub resizable: bool,
-    
-    /// Vertical sync mode
-    pub vsync: VsyncMode,
-    
-    /// Transparent window background
-    pub transparent: bool,
-    
-    /// Window decorations (title bar, borders)
-    pub decorations: bool,
-    
-    /// Start maximized
-    pub maximized: bool,
-    
-    /// Window initially visible
-    pub visible: bool,
-    
-    /// Cursor visibility
-    pub cursor_visible: bool,
-    
-    /// Cursor locked to center (FPS style)
-    pub cursor_locked: bool,
-    
-    /// Cursor confined to window
-    pub cursor_grabbed: bool,
-    
-    /// Minimum window size
-    pub min_size: Option<(u32, u32)>,
-    
-    /// Maximum window size
-    pub max_size: Option<(u32, u32)>,
-}
-
-impl Default for WindowHints {
-    fn default() -> Self {
-        Self {
-            resizable: true,
-            vsync: VsyncMode::On,
-            transparent: false,
-            decorations: true,
-            maximized: false,
-            visible: true,
-            cursor_visible: true,
-            cursor_locked: false,
-            cursor_grabbed: false,
-            min_size: None,
-            max_size: None,
-        }
-    }
-}
+use runtime::{
+    Input, InputMap, PlatformCapabilities, TargetArch, TargetOS, WindowHints,
+};
+use runtime::winit;
 ```
 
-### Usage in GameConfig
-
-```rust
-GameConfig::default()
-    .with_window_hints(WindowHints {
-        resizable: true,
-        vsync: VsyncMode::On,
-        decorations: true,
-        cursor_visible: false,    // Hide for FPS
-        cursor_locked: true,      // Lock to center
-        min_size: Some((800, 600)),
-        max_size: None,
-        ..Default::default()
-    })
-```
-
-### Runtime Window Control
-
-```rust
-// Not directly exposed in UpdateContext
-// Use GameConfig for initial setup
-// For runtime changes, use platform-specific APIs or request restart
-```
-
----
-
-## Platform Detection
-
-### TargetOS
+## `TargetOS`
 
 ```rust
 pub enum TargetOS {
@@ -98,398 +19,160 @@ pub enum TargetOS {
     Android,
     Unknown,
 }
+```
 
-impl TargetOS {
-    pub fn current() -> Self;
-    pub fn is_linux(&self) -> bool;
-    pub fn is_windows(&self) -> bool;
-    pub fn is_android(&self) -> bool;
+| Method | Description |
+|--------|-------------|
+| `TargetOS::current()` | Compile-time target, as a `const fn` |
+| `name()` | `"Linux"`, `"Windows"`, `"Android"`, `"Unknown"` |
+| `is_mobile()` | True for Android |
+| `is_desktop()` | True for Linux and Windows |
+| `supports_vulkan()` | True on desktop |
+| `supports_opengl()` | True on all supported targets |
+| `default_backend()` | Vulkan on desktop, OpenGL on Android |
+
+The enum contains no macOS, iOS or WebAssembly variants. Unsupported targets
+report `Unknown`; the engine does not build there.
+
+```rust
+match TargetOS::current() {
+    TargetOS::Android => { /* fullscreen UI, physical viewport size */ }
+    TargetOS::Linux | TargetOS::Windows => { /* desktop controls */ }
+    TargetOS::Unknown => { /* fall back to OpenGL */ }
 }
 ```
 
-### TargetArch
+Prefer compile-time `#[cfg(target_os = "...")]` when the code needs an
+Android-only type such as `AndroidApp`.
+
+## `TargetArch`
 
 ```rust
 pub enum TargetArch {
     X86_64,
-    Aarch64,
-    Arm,
+    AArch64,
+    ARMv7,
     Unknown,
-}
-
-impl TargetArch {
-    pub fn current() -> Self;
-    pub fn is_x86_64(&self) -> bool;
-    pub fn is_aarch64(&self) -> bool;
-    pub fn is_arm(&self) -> bool;
 }
 ```
 
-### PlatformCapabilities
+| Method | Description |
+|--------|-------------|
+| `TargetArch::current()` | Compile-time architecture |
+| `name()` | `"x86_64"`, `"aarch64"`, `"armv7"`, `"unknown"` |
+| `is_64bit()` | True for x86_64 and aarch64 |
+
+## `PlatformCapabilities`
+
+Detected at runtime on the machine that runs the game.
 
 ```rust
 pub struct PlatformCapabilities {
-    /// Vulkan available
-    pub vulkan: bool,
-    
-    /// OpenGL available
-    pub opengl: bool,
-    
-    /// OpenGL ES available
-    pub opengl_es: bool,
-    
-    /// Maximum texture size
-    pub max_texture_size: u32,
-    
-    /// Maximum anisotropy
-    pub max_anisotropy: f32,
-    
-    /// Supported texture formats
-    pub supported_formats: Vec<TextureFormat>,
-    
-    /// Multi-GPU support
-    pub multi_gpu: bool,
-}
-
-impl PlatformCapabilities {
-    pub fn detect() -> Self;
+    pub vulkan_version: Option<u32>,
+    pub vulkan_extensions: Vec<String>,
+    pub opengl_version: Option<String>,
+    pub opengl_extensions: Vec<String>,
+    pub virtualized: bool,
+    pub cpu_cores: usize,
+    pub total_memory_mb: usize,
+    pub gpu_vendor: Option<String>,
+    pub gpu_renderer: Option<String>,
+    pub high_dpi: bool,
+    pub touch_support: bool,
+    pub gamepad_support: bool,
 }
 ```
 
-### Usage
+`PlatformCapabilities::detect()` fills what it can without creating a graphics
+context. CPU cores come from `std::thread::available_parallelism`; on Linux it
+also reads `/proc/cpuinfo` and `/proc/meminfo` for virtualization and memory.
+GPU and extension fields stay `None`/empty until a backend is created, so do
+not treat them as a hardware probe.
+
+`meets_minimum_requirements()` returns true for at least 2 CPU cores and
+2 GB of memory.
+
+## `WindowHints`
+
+Configuration values for a future window configuration path. The runtime
+currently creates its window from `GameConfig`; `WindowHints` is useful to
+platform-aware tools and custom integrations.
 
 ```rust
-fn create_world(&mut self) -> World {
-    let caps = PlatformCapabilities::detect();
-    
-    if caps.vulkan {
-        // Use Vulkan-specific features
-    }
-    
-    if caps.opengl_es {
-        // Adjust for mobile GPU limits
-        // Lower texture resolution, simpler shaders
-    }
-    
-    // Check max texture size
-    if caps.max_texture_size < 4096 {
-        // Downscale large textures
-    }
-    
-    World::default()
+pub struct WindowHints {
+    pub preferred_backend: Option<BackendKind>,
+    pub vsync: bool,
+    pub fullscreen: bool,
+    pub transparent: bool,
+    pub high_dpi: bool,
+    pub resizable: bool,
+    pub title: String,
+    pub size: Option<(u32, u32)>,
+    pub min_size: Option<(u32, u32)>,
+    pub max_size: Option<(u32, u32)>,
 }
 ```
 
-### Compile-Time Detection
+`WindowHints::for_platform()` sets Android to fullscreen, non-resizable, VSync
+on and the full display size. Desktop keeps a resizable 1280×720 window with a
+640×480 minimum.
+
+## `winit` re-export
+
+Games use `runtime::winit` instead of adding `winit` to their own manifest:
 
 ```rust
-#[cfg(target_os = "linux")]
-fn linux_only() { }
-
-#[cfg(target_os = "windows")]
-fn windows_only() { }
-
-#[cfg(target_os = "android")]
-fn android_only() { }
-
-#[cfg(target_arch = "x86_64")]
-fn x86_64_only() { }
-
-#[cfg(target_arch = "aarch64")]
-fn arm64_only() { }
+use runtime::winit::keyboard::{KeyCode, PhysicalKey};
+use runtime::winit::event::MouseButton;
 ```
 
----
-
-## Android Specific
-
-### AndroidApp
-
-```rust
-// From android-activity crate
-pub struct AndroidApp {
-    // JNI environment
-    // Activity reference
-    // Window/surface
-    // Input queue
-    // Configuration
-}
-
-impl AndroidApp {
-    pub fn window(&self) -> Option<&NativeWindow>;
-    pub fn activity(&self) -> &JObject;
-    pub fn config(&self) -> Configuration;
-    pub fn input_queue(&self) -> &InputQueue;
-    pub fn looper(&self) -> &Looper;
-}
-```
-
-### Android Entry Point
+This keeps the `winit` version aligned between the engine and the game. The
+Android entry point type is also reached through the re-export:
 
 ```rust
 #[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub fn android_main(app: soldatik3d::winit::platform::android::activity::AndroidApp) {
-    soldatik3d::run_android(MyGame, app).unwrap();
+pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
+    // ...
 }
 ```
 
-### Android-Specific Features
+Do not create a second `winit` event loop inside a game: `winit` allows only one
+per process, and the engine already owns it.
+
+## Window and surface internals
+
+`PlatformWindow` wraps a `winit::window::Window`:
 
 ```rust
-#[cfg(target_os = "android")]
-fn android_specific(ctx: &mut UpdateContext<'_>) {
-    // Touch input
-    for touch in ctx.input.touches() {
-        // Handle touch
-    }
-    
-    // Sensor access (via JNI)
-    // Not directly exposed, use JNI bridge
-    
-    // Lifecycle events handled by NativeActivity
-    // onPause/onResume automatic
+impl PlatformWindow {
+    pub fn new(event_loop: &ActiveEventLoop, title: &str, width: u32, height: u32)
+        -> anyhow::Result<Self>;
+    pub fn id(&self) -> WindowId;
+    pub fn request_redraw(&self);
+    pub fn inner_size(&self) -> (u32, u32);
+    pub fn set_title(&self, title: &str);
+    pub fn surface(&self) -> anyhow::Result<WindowSurface>;
+    pub fn set_cursor_captured(&self, captured: bool) -> bool;
 }
 ```
 
----
+`surface()` produces the backend-neutral `render::WindowSurface` from raw
+handles. `set_cursor_captured` returns whether capture succeeded; on compositors
+that refuse pointer lock the engine stays in menu mode.
 
-## Windows Specific
+Games never construct these types; they are listed here for engine and tool
+development.
 
-### Windows-Specific Features
+## Input ownership
 
-```rust
-#[cfg(target_os = "windows")]
-fn windows_specific(ctx: &mut UpdateContext<'_>) {
-    // Raw input (high precision mouse)
-    // Available via winit
-    
-    // HDR support
-    // Check PlatformCapabilities
-    
-    // DirectX/D3D12 interop
-    // Not directly exposed
-}
-```
+The runtime feeds `winit` events into `Input` and calls `Input::begin_frame`
+before each update. Games read the snapshot through `UpdateContext::input` and
+cannot mutate it. See the [Input API](input.md).
 
----
+## Related
 
-## Linux Specific
-
-### Linux-Specific Features
-
-```rust
-#[cfg(target_os = "linux")]
-fn linux_specific() {
-    // Wayland vs X11
-    // Check via std::env::var("XDG_SESSION_TYPE")
-    
-    // DRI/PRIME for multi-GPU
-    // DRI_PRIME=1 cargo run
-    
-    // Vulkan ICD selection
-    // VK_ICD_FILENAMES=...
-}
-```
-
----
-
-## Window Surface
-
-```rust
-pub struct WindowSurface {
-    /// Raw window handle (platform-specific)
-    pub raw_handle: RawWindowHandle,
-    
-    /// Raw display handle
-    pub raw_display: RawDisplayHandle,
-    
-    /// Window size in pixels
-    pub size: (u32, u32),
-    
-    /// Framebuffer size (may differ on HiDPI)
-    pub framebuffer_size: (u32, u32),
-    
-    /// Content scale factor (HiDPI)
-    pub scale_factor: f32,
-    
-    /// Is window minimized
-    pub minimized: bool,
-    
-    /// Is window focused
-    pub focused: bool,
-}
-```
-
-### Accessing Surface
-
-```rust
-// In Game::config
-GameConfig::default()
-    .with_window_size(1280, 720)
-
-// Runtime access via Renderer
-impl Renderer {
-    pub fn extent(&self) -> (u32, u32);  // Window size
-    pub fn framebuffer_extent(&self) -> (u32, u32);  // FB size
-    pub fn scale_factor(&self) -> f32;  // HiDPI scale
-}
-```
-
----
-
-## Input Platform Differences
-
-| Feature | Linux | Windows | Android |
-|---------|-------|---------|---------|
-| Keyboard | ✅ | ✅ | ✅ (physical) |
-| Mouse | ✅ | ✅ | ❌ |
-| Touch | ❌ | ✅ (touchscreen) | ✅ |
-| Gamepad | ✅ | ✅ | ✅ |
-| Raw Input | ✅ | ✅ | ❌ |
-| IME | ✅ | ✅ | ⚠️ |
-| High DPI | ✅ | ✅ | ✅ |
-
----
-
-## Display/Monitor
-
-```rust
-pub struct Monitor {
-    pub name: String,
-    pub size: (u32, u32),        // Physical mm
-    pub resolution: (u32, u32),  // Current mode
-    pub position: (i32, i32),    // Virtual desktop coords
-    pub scale_factor: f32,       // HiDPI
-    pub is_primary: bool,
-    pub refresh_rate: u32,       // Hz
-    pub video_modes: Vec<VideoMode>,
-}
-
-pub struct VideoMode {
-    pub width: u32,
-    pub height: u32,
-    pub refresh_rate: u32,
-    pub bit_depth: u32,
-}
-
-impl Window {
-    pub fn current_monitor(&self) -> Option<Monitor>;
-    pub fn available_monitors() -> Vec<Monitor>;
-    pub fn primary_monitor() -> Option<Monitor>;
-}
-```
-
----
-
-## Clipboard
-
-```rust
-pub struct Clipboard {
-    pub fn read_text(&self) -> Option<String>;
-    pub fn write_text(&mut self, text: &str);
-}
-
-// Access via Window
-impl Window {
-    pub fn clipboard(&self) -> Clipboard;
-}
-```
-
----
-
-## Cursor
-
-```rust
-pub enum CursorIcon {
-    Default,
-    Crosshair,
-    Hand,
-    Arrow,
-    Move,
-    Text,
-    Wait,
-    Help,
-    Progress,
-    NotAllowed,
-    ContextMenu,
-    Cell,
-    VerticalText,
-    Alias,
-    Copy,
-    NoDrop,
-    Grab,
-    Grabbing,
-    EResize,
-    NResize,
-    NeResize,
-    NwResize,
-    SResize,
-    SeResize,
-    SwResize,
-    WResize,
-    EwResize,
-    NsResize,
-    NeswResize,
-    NwseResize,
-    ColResize,
-    RowResize,
-    AllScroll,
-    ZoomIn,
-    ZoomOut,
-}
-
-impl Window {
-    pub fn set_cursor_icon(&self, icon: CursorIcon);
-    pub fn set_cursor_visible(&self, visible: bool);
-    pub fn set_cursor_grab(&self, grab: CursorGrabMode) -> Result<(), GrabError>;
-    pub fn set_cursor_position(&self, x: f64, y: f64) -> Result<(), CursorError>;
-}
-
-pub enum CursorGrabMode {
-    None,
-    Confined,
-    Locked,
-}
-```
-
----
-
-## Fullscreen Modes
-
-```rust
-pub enum Fullscreen {
-    /// Windowed
-    Windowed,
-    
-    /// Borderless fullscreen on specific monitor
-    Borderless(Monitor),
-    
-    /// Exclusive fullscreen (mode change)
-    Exclusive(VideoMode),
-}
-
-impl Window {
-    pub fn set_fullscreen(&self, fullscreen: Option<Fullscreen>);
-    pub fn fullscreen(&self) -> Option<Fullscreen>;
-}
-```
-
----
-
-## Platform-Specific Environment Variables
-
-| Variable | Platform | Description |
-|----------|----------|-------------|
-| `DISPLAY` | Linux (X11) | X server display |
-| `WAYLAND_DISPLAY` | Linux (Wayland) | Wayland socket |
-| `XDG_SESSION_TYPE` | Linux | `x11` or `wayland` |
-| `VK_ICD_FILENAMES` | All | Vulkan ICD override |
-| `VK_LAYER_PATH` | All | Vulkan layer path |
-| `ANDROID_NDK_HOME` | Android | NDK path |
-| `ANDROID_SDK_ROOT` | Android | SDK path |
-| `VULKAN_SDK` | Windows | Vulkan SDK path |
-
----
-
-*See [Runtime API](runtime.md) for `GameConfig` and `WindowHints`, or [Platform Guides](guides/) for platform-specific setup.*
+- [Rendering API](rendering.md)
+- [Runtime API](runtime.md)
+- [Android guide](../guides/android.md)
+- [Windows guide](../guides/windows.md)
+- [Linux guide](../guides/linux.md)

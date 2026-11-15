@@ -1,559 +1,221 @@
-# Rendering API Reference
+# Rendering API
 
-Complete API documentation for rendering-related types and functions.
-
-## Renderer Trait
+Games do not create renderers or talk to Vulkan/OpenGL directly. The runtime
+selects a backend, owns the `Renderer` and passes a `FrameData` value every
+frame. This page documents the types a game may touch.
 
 ```rust
-pub trait Renderer: Send + Sync {
-    /// Render a frame with the given data
-    fn render(&mut self, frame: &FrameData<'_>) -> Result<()>;
-    
-    /// Handle window resize
-    fn resize(&mut self, width: u32, height: u32) -> Result<()>;
-    
-    /// Request screenshot (executed next frame)
-    fn screenshot(&mut self) -> Result<()>;
-    
-    /// Wait for GPU to finish all work
-    fn wait_idle(&self) -> Result<()>;
-    
-    /// Get render statistics
-    fn stats(&self) -> RenderStats;
-    
-    /// Get current render extent
-    fn extent(&self) -> (u32, u32);
-    
-    /// Get current VSync mode
-    fn vsync(&self) -> VsyncMode;
-    
-    /// Set VSync mode
-    fn set_vsync(&mut self, mode: VsyncMode) -> Result<()>;
-    
-    /// Set debug visualization mode
-    fn set_debug_view(&mut self, view: DebugView);
+use runtime::{
+    BackendKind, CameraFrame, DebugView, FrameData, RenderStats, Renderer,
+    VsyncMode, WindowSurface,
+};
+```
+
+## `BackendKind`
+
+```rust
+#[non_exhaustive]
+pub enum BackendKind {
+    Vulkan,
+    OpenGl,
 }
 ```
 
-## FrameData
+| Method | Description |
+|--------|-------------|
+| `name()` | `"vulkan"` or `"opengl"` |
+| `from_name(&str)` | Parses `vulkan`/`vk`/`opengl`/`gl` |
+| `from_env()` | Reads `SOLDATIK3D_BACKEND` |
 
-Per-frame data passed to `Renderer::render()`:
+`BackendKind::default()` is `Vulkan`. On Android the runtime overrides the
+default to `OpenGl` because the Vulkan backend is not compiled for the target.
 
-```rust
-pub struct FrameData<'a> {
-    /// Camera view and projection matrices
-    pub camera: CameraFrame,
-    
-    /// Active lights (max 8 directional/point, unlimited ambient)
-    pub lights: &'a [Light],
-    
-    /// UI vertices for immediate-mode GUI
-    pub ui_vertices: &'a [UiVertex],
-    
-    /// Debug visualization mode
-    pub debug_view: DebugView,
-    
-    /// Total time since start (seconds)
-    pub time: f32,
-    
-    /// Delta time since last frame (seconds)
-    pub dt: f32,
-}
-```
+Selection order:
 
-## CameraFrame
+1. `SOLDATIK3D_BACKEND` if set to a known value.
+2. `GameConfig::backend` (usually from `with_backend`).
+3. Platform default: Vulkan on desktop, OpenGL ES on Android.
 
-Camera matrices for the current frame:
+An unavailable backend causes renderer creation to fail. Use
+`SOLDATIK3D_BACKEND=opengl` to isolate driver problems.
+
+## `VsyncMode`
 
 ```rust
-pub struct CameraFrame {
-    /// View matrix (world → view)
-    pub view: Mat4,
-    
-    /// Projection matrix (view → clip)
-    pub projection: Mat4,
-    
-    /// Combined view-projection (clip ← world)
-    pub view_projection: Mat4,
-    
-    /// Inverse view-projection (world ← clip)
-    pub inv_view_projection: Mat4,
-    
-    /// Camera world position
-    pub position: Vec3,
-    
-    /// Camera forward vector
-    pub forward: Vec3,
-    
-    /// Camera up vector
-    pub up: Vec3,
-    
-    /// Camera right vector
-    pub right: Vec3,
-}
-```
-
-## Light
-
-```rust
-pub struct Light {
-    /// Light type
-    pub light_type: LightType,
-    
-    /// Light color (linear RGB)
-    pub color: Color,
-    
-    /// Intensity multiplier
-    pub intensity: f32,
-    
-    /// Position (for Point/Spot)
-    pub position: Vec3,
-    
-    /// Direction (for Directional/Spot), normalized
-    pub direction: Vec3,
-    
-    /// Range/attenuation distance (Point/Spot)
-    pub range: f32,
-    
-    /// Inner cone angle in radians (Spot)
-    pub inner_angle: f32,
-    
-    /// Outer cone angle in radians (Spot)
-    pub outer_angle: f32,
-    
-    /// Cast shadows (Directional only)
-    pub cast_shadows: bool,
-    
-    /// Shadow map bias
-    pub shadow_bias: f32,
-    
-    /// Shadow map normal offset
-    pub shadow_normal_bias: f32,
-}
-
-pub enum LightType {
-    Directional,  // Sun-like, infinite distance
-    Point,        // Omnidirectional, attenuated
-    Spot,         // Cone-shaped, attenuated
-    Ambient,      // Global constant illumination
-}
-```
-
-### Light Builders
-
-```rust
-// Directional (sun)
-Light::directional()
-    .with_direction(Vec3::new(-0.5, -1.0, -0.3).normalize())
-    .with_color(Color::rgb(1.0, 0.95, 0.85))
-    .with_intensity(3.0)
-    .with_cast_shadows(true)
-    .with_shadow_bias(0.005)
-    .with_shadow_normal_bias(0.01)
-
-// Point light
-Light::point()
-    .with_position(Vec3::new(0.0, 2.0, 0.0))
-    .with_color(Color::rgb(1.0, 0.5, 0.2))
-    .with_intensity(10.0)
-    .with_range(20.0)
-
-// Spot light
-Light::spot()
-    .with_position(Vec3::new(0.0, 5.0, 0.0))
-    .with_direction(Vec3::NEG_Y)
-    .with_color(Color::WHITE)
-    .with_intensity(15.0)
-    .with_range(30.0)
-    .with_angles(15.0_f32.to_radians(), 30.0_f32.to_radians())
-
-// Ambient
-Light::ambient()
-    .with_color(Color::rgb(0.2, 0.2, 0.3))
-    .with_intensity(0.5)
-```
-
-## Material
-
-```rust
-pub struct Material {
-    /// Base color (tint)
-    pub albedo: Color,
-    
-    /// Albedo texture
-    pub albedo_texture: Option<TextureHandle>,
-    
-    /// Normal map texture
-    pub normal_texture: Option<TextureHandle>,
-    
-    /// Roughness map texture
-    pub roughness_texture: Option<TextureHandle>,
-    
-    /// Metallic map texture
-    pub metallic_texture: Option<TextureHandle>,
-    
-    /// Emissive (color, intensity)
-    pub emissive: (Color, f32),
-    
-    /// Metallic factor [0, 1]
-    pub metallic: f32,
-    
-    /// Roughness factor [0, 1]
-    pub roughness: f32,
-    
-    /// Alpha blending mode
-    pub alpha_mode: AlphaMode,
-    
-    /// Render both sides
-    pub double_sided: bool,
-}
-
-pub enum AlphaMode {
-    Opaque,
-    Mask { cutoff: f32 },
-    Blend,
-}
-```
-
-### Material Builder
-
-```rust
-Material::default()
-    .with_albedo(Color::WHITE)
-    .with_albedo_texture(texture_handle)
-    .with_normal_texture(normal_handle)
-    .with_roughness_texture(roughness_handle)
-    .with_metallic_texture(metallic_handle)
-    .with_emissive(Color::rgb(1.0, 0.5, 0.0), 5.0)
-    .with_metallic(0.0)
-    .with_roughness(0.5)
-    .with_alpha_mode(AlphaMode::Opaque)
-    .with_double_sided(false)
-```
-
-### AlphaMode
-
-```rust
-pub enum AlphaMode {
-    /// Fully opaque, depth write enabled
-    Opaque,
-    
-    /// Alpha test with cutoff
-    Mask { cutoff: f32 },  // cutoff ∈ [0, 1]
-    
-    /// Alpha blending
-    Blend,
-}
-```
-
-## Mesh
-
-```rust
-pub struct Mesh {
-    /// Vertex buffer
-    pub vertices: Vec<Vertex>,
-    
-    /// Index buffer (optional)
-    pub indices: Option<Vec<u32>>,
-    
-    /// Bounding box
-    pub bounds: Aabb,
-}
-
-impl Mesh {
-    /// Unit cube centered at origin
-    pub fn cube(size: f32) -> Self;
-    
-    /// UV sphere
-    pub fn sphere(radius: f32, segments: u32) -> Self;
-    
-    /// Cylinder
-    pub fn cylinder(radius: f32, height: f32, segments: u32) -> Self;
-    
-    /// Plane
-    pub fn plane(size: f32, subdivisions: u32) -> Self;
-    
-    /// Quad
-    pub fn quad(size: f32) -> Self;
-    
-    /// Load from GLTF binary data
-    pub fn from_gltf(data: &[u8], mesh_index: usize) -> Result<Self>;
-    
-    /// Generate tangent space
-    pub fn generate_tangents(&mut self) -> Result<()>;
-}
-```
-
-## Vertex
-
-```rust
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Vertex {
-    /// Position (world space)
-    pub position: Vec3,
-    
-    /// Normal (world space, normalized)
-    pub normal: Vec3,
-    
-    /// Tangent (world space, normalized)
-    pub tangent: Vec3,
-    
-    /// Bitangent sign (-1 or 1)
-    pub bitangent_sign: f32,
-    
-    /// Texture coordinates
-    pub uv: Vec2,
-    
-    /// Vertex color (linear RGB)
-    pub color: Color,
-}
-```
-
-## Transform
-
-```rust
-pub struct Transform {
-    pub translation: Vec3,
-    pub rotation: Quat,
-    pub scale: Vec3,
-}
-
-impl Transform {
-    pub fn identity() -> Self;
-    
-    pub fn from_translation(translation: Vec3) -> Self;
-    pub fn from_rotation(rotation: Quat) -> Self;
-    pub fn from_scale(scale: Vec3) -> Self;
-    
-    pub fn matrix(&self) -> Mat4;
-    pub fn inverse(&self) -> Self;
-    
-    pub fn translate(&mut self, v: Vec3);
-    pub fn rotate(&mut self, q: Quat);
-    pub fn scale(&mut self, v: Vec3);
-}
-```
-
-## Entity
-
-```rust
-pub struct Entity {
-    pub id: EntityId,
-    pub transform: Transform,
-    pub mesh: Option<MeshHandle>,
-    pub material: Material,
-    pub visible: bool,
-    pub cast_shadows: bool,
-    pub receive_shadows: bool,
-    pub tags: HashSet<String>,
-}
-```
-
-## Scene/World
-
-```rust
-pub struct World {
-    // Cameras
-    pub fn add_camera(&mut self, name: String, camera: Camera) -> String;
-    pub fn active_camera(&self) -> Option<&Camera>;
-    pub fn active_camera_mut(&mut self) -> Option<&mut Camera>;
-    pub fn select_camera(&mut self, name: &str) -> bool;
-    pub fn cameras(&self) -> impl Iterator<Item = (&String, &Camera)>;
-    
-    // Entities
-    pub fn spawn_mesh(&mut self, mesh: Mesh, transform: Transform, material: Material) -> EntityId;
-    pub fn entity(&self, id: EntityId) -> Option<&Entity>;
-    pub fn entity_mut(&mut self, id: EntityId) -> Option<&mut Entity>;
-    pub fn remove_entity(&mut self, id: EntityId) -> Option<Entity>;
-    pub fn entities(&self) -> impl Iterator<Item = (EntityId, &Entity)>;
-    pub fn entities_mut(&mut self) -> impl Iterator<Item = (EntityId, &mut Entity)>;
-    
-    // Lights
-    pub fn add_light(&mut self, light: Light) -> LightId;
-    pub fn light(&self, id: LightId) -> Option<&Light>;
-    pub fn light_mut(&mut self, id: LightId) -> Option<&mut Light>;
-    pub fn remove_light(&mut self, id: LightId) -> Option<Light>;
-    pub fn lights(&self) -> &[Light];
-    pub fn lights_mut(&mut self) -> &mut [Light];
-    
-    // Queries
-    pub fn entities_with<T: Component>(&self) -> impl Iterator<Item = (EntityId, &T)>;
-}
-```
-
-## Renderer Control (from UpdateContext)
-
-```rust
-impl UpdateContext<'_> {
-    /// Set debug visualization mode
-    pub fn set_debug_view(&mut self, view: DebugView);
-    
-    /// Get current debug view
-    pub fn debug_view(&self) -> DebugView;
-    
-    /// Set VSync mode
-    pub fn set_vsync(&mut self, mode: VsyncMode) -> Result<()>;
-    
-    /// Get current VSync mode
-    pub fn vsync(&self) -> VsyncMode;
-    
-    /// Request screenshot (next frame)
-    pub fn screenshot(&mut self) -> Result<()>;
-    
-    /// Get render statistics
-    pub fn stats(&self) -> RenderStats;
-    
-    /// Get render extent
-    pub fn extent(&self) -> (u32, u32);
-    
-    /// Wait for GPU idle
-    pub fn wait_idle(&self) -> Result<()>;
-}
-```
-
-## DebugView
-
-```rust
-pub enum DebugView {
-    /// Normal lit rendering
-    Lit = 0,
-    
-    /// Visualize normals (RGB = XYZ)
-    Normals = 1,
-    
-    /// Visualize depth (linearized)
-    Depth = 2,
-    
-    /// Wireframe overlay
-    Wireframe = 3,
-}
-```
-
-## VsyncMode
-
-```rust
+#[non_exhaustive]
 pub enum VsyncMode {
-    /// Wait for vblank (default)
-    On,
-    
-    /// Immediate present, no sync
     Off,
-    
-    /// Adaptive: vsync when > refresh rate
+    On,        // default
     Adaptive,
-    
-    /// Mailbox (triple buffering, latest frame)
     Mailbox,
 }
 ```
 
-## RenderStats
+| Mode | Behavior |
+|------|----------|
+| `Off` | Present immediately; may tear |
+| `On` | Wait for vertical blank; caps at refresh rate |
+| `Adaptive` | Wait for blank when on time, present immediately when late; falls back to `On` if unsupported |
+| `Mailbox` | Triple buffering; Vulkan only, OpenGL falls back to `On` |
+
+`VsyncMode::from_name` accepts `off`/`0`/`false`/`disabled`, `on`/`1`/`true`/
+`enabled`, `adaptive`/`adapt`, `mailbox`/`triple`/`triple_buffer`.
+`VsyncMode::from_env` reads `SOLDATIK3D_VSYNC`.
+
+The demo default is `On`. Use `SOLDATIK3D_VSYNC=off SOLDATIK3D_MAX_FRAMES=...`
+for benchmarks.
+
+## `DebugView`
+
+```rust
+pub enum DebugView {
+    Lit,      // default
+    Normals,
+    Depth,
+}
+```
+
+Returned from `Game::debug_view` every frame. The demo switches it with F2/F3/F4
+and the `SOLDATIK3D_DEBUG_VIEW` environment variable (`lit`, `normals`,
+`depth`). It is a forward-pass visualization, not a separate render path.
+
+```rust
+fn debug_view(&self) -> DebugView {
+    self.view
+}
+```
+
+## `RenderStats`
 
 ```rust
 pub struct RenderStats {
-    pub vertices: u32,
-    pub triangles: u32,
+    pub vertices: u64,
+    pub triangles: u64,
     pub draw_calls: u32,
 }
 ```
 
-## Texture Handling
+`UpdateContext::stats` contains the counters of the previous submitted frame.
+The values include shadow, SSAO, bloom and UI work performed by the backend, so
+they describe GPU submission rather than gameplay mesh counts.
 
 ```rust
-impl Renderer {
-    /// Load texture from file (PNG, JPG, KTX)
-    pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle>;
-    
-    /// Create texture from raw data
-    pub fn create_texture(&mut self, data: &[u8], width: u32, height: u32, format: TextureFormat) -> Result<TextureHandle>;
-    
-    /// Update texture data
-    pub fn update_texture(&mut self, handle: TextureHandle, data: &[u8]) -> Result<()>;
-    
-    /// Get texture info
-    pub fn texture_info(&self, handle: TextureHandle) -> Option<TextureInfo>;
+let fps = if ctx.dt > 0.0 { 1.0 / ctx.dt } else { 0.0 };
+ctx.ui.text(
+    &format!("{:.0} FPS  {} tris  {} draws", fps, ctx.stats.triangles, ctx.stats.draw_calls),
+    20.0,
+    20.0,
+    1.0,
+    [1.0; 4],
+);
+```
+
+## `CameraFrame` and `FrameData`
+
+These are backend-facing types. A game only reads `CameraFrame` if it writes
+custom rendering code against the `Renderer` trait.
+
+```rust
+pub struct CameraFrame {
+    pub view: Mat4,
+    pub projection: Mat4,
+    pub position: Vec3,
 }
 
-pub enum TextureFormat {
-    R8,
-    RG8,
-    RGB8,
-    RGBA8,
-    RGBA16F,
-    RGBA32F,
-    Depth24,
-    Depth32F,
+impl CameraFrame {
+    pub fn view_projection(&self) -> Mat4;
+}
+
+pub struct FrameData<'a> {
+    pub camera: CameraFrame,
+    pub ui_vertices: &'a [UiVertex],
+    pub debug_view: DebugView,
 }
 ```
 
-## Model Loading
+`projection` already includes the current viewport aspect ratio.
+
+## `Renderer`
+
+The trait every backend implements:
 
 ```rust
-impl Renderer {
-    /// Load mesh from GLTF/GLB
-    pub fn load_model(&mut self, path: &str) -> Result<ModelHandle>;
-    
-    /// Load mesh with materials
-    pub fn load_model_with_materials(&mut self, path: &str) -> Result<(ModelHandle, Vec<Material>)>;
-}
-
-pub struct Model {
-    pub meshes: Vec<MeshHandle>,
-    pub materials: Vec<Material>,
-    pub nodes: Vec<ModelNode>,
-    pub animations: Vec<Animation>,
-}
-
-pub struct ModelNode {
-    pub name: String,
-    pub mesh: Option<MeshHandle>,
-    pub transform: Transform,
-    pub children: Vec<usize>,
+pub trait Renderer {
+    fn backend(&self) -> BackendKind;
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()>;
+    fn render(&mut self, frame: &FrameData<'_>) -> anyhow::Result<()>;
+    fn wait_idle(&self) -> anyhow::Result<()>;
+    fn stats(&self) -> RenderStats;
+    fn extent(&self) -> (u32, u32);
+    fn screenshot(&mut self) -> anyhow::Result<()>;
+    fn set_vsync(&mut self, vsync: VsyncMode) -> anyhow::Result<()>;
+    fn vsync(&self) -> VsyncMode;
 }
 ```
 
-## Shader Loading
+Games never call these methods: the runtime handles resize, render, idle and
+screenshot. The trait exists so both backends are interchangeable and so new
+backends can be added without changing game code.
+
+`Renderer::screenshot` writes `screenshot_<unix_seconds>.png` into the current
+working directory. Vulkan captures the swapchain image before present; OpenGL
+reads the default framebuffer and flips it vertically. Both include the UI.
+
+## `WindowSurface`
 
 ```rust
-impl Renderer {
-    /// Load custom shader (GLSL for OpenGL, SPIR-V for Vulkan)
-    pub fn load_shader(&mut self, path: &str) -> Result<ShaderHandle>;
-    
-    /// Create shader from source
-    pub fn create_shader(&mut self, vertex_src: &str, fragment_src: &str) -> Result<ShaderHandle>;
+pub struct WindowSurface {
+    pub window: RawWindowHandle,
+    pub display: RawDisplayHandle,
+    pub width: u32,
+    pub height: u32,
 }
 ```
 
-## Render Pass Customization
+A backend-neutral bundle of raw handles. `platform` creates it from the live
+`winit` window; backend crates do not depend on `winit`.
+
+## Rendering pipeline
+
+Both backends render the same sequence:
+
+1. **Shadow pass** — render meshes from the `PrimaryLight` into a 2048²
+   orthographic depth map.
+2. **Depth prepass** — Vulkan fills depth for the camera view; OpenGL uses the
+   same geometry path.
+3. **Forward PBR** — metallic/roughness shading with one primary directional
+   light, up to eight nearest point lights, IBL from a procedural environment
+   cubemap and shadow PCF.
+4. **SSAO** — half-resolution screen-space ambient occlusion from depth.
+5. **Bloom** — bright-pass extraction and separable Gaussian blur.
+6. **Composite** — ACES tone mapping and gamma correction.
+7. **UI pass** — `UiDrawList` vertices with the bitmap font atlas.
+
+Camera and shadow frustum culling skip meshes outside the view. The Vulkan HDR
+target is `R16G16B16A16_SFLOAT`; OpenGL ES falls back to RGBA8 when
+`EXT_color_buffer_half_float` is unavailable.
+
+## Backend availability
+
+| Target | Vulkan | OpenGL |
+|--------|--------|--------|
+| Linux x86_64 | yes | yes |
+| Windows MSVC x86_64 | yes | yes |
+| Windows GNU x86_64 | no | yes |
+| Android | no | OpenGL ES 3.0 |
+
+Check at runtime with `TargetOS` and `PlatformCapabilities`:
 
 ```rust
-impl UpdateContext<'_> {
-    /// Add custom render pass (advanced)
-    pub fn add_render_pass(&mut self, pass: Box<dyn RenderPass>);
-}
+use runtime::TargetOS;
 
-pub trait RenderPass: Send + Sync {
-    fn name(&self) -> &str;
-    fn execute(&mut self, renderer: &mut dyn Renderer, frame: &FrameData<'_>) -> Result<()>;
+if TargetOS::current().supports_vulkan() {
+    // select Vulkan
 }
 ```
 
-## Screenshot
+## Related
 
-```rust
-impl UpdateContext<'_> {
-    /// Request screenshot (saved next frame)
-    pub fn screenshot(&mut self) -> Result<()>;
-    
-    /// Screenshot with custom filename
-    pub fn screenshot_as(&mut self, filename: &str) -> Result<()>;
-}
-
-// Output: screenshot_<timestamp>.png in working directory
-// Format: PNG, RGBA8, vertical flip applied
-```
-
----
-
-*See [Runtime API](runtime.md) for `Game`, `GameConfig`, `UpdateContext`, and [Game Loop](guides/game-loop.md) for frame timing.*
+- [Runtime API](runtime.md)
+- [Platform API](platform.md)
+- [Architecture](../guides/architecture.md)

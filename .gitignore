@@ -4,6 +4,13 @@
 # Local packaging output (cross_build.sh, release workflows)
 /dist
 
+# Local APK output and Gradle build state
+/apk
+/scripts/apk/gradle/.gradle/
+/scripts/apk/gradle/local.properties
+/scripts/apk/gradle/app/build/
+/scripts/apk/gradle/app/src/main/jniLibs/
+
 # rustfmt backups
 **/*.rs.bk
 

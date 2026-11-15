@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# Build APK for Soldatik3D game project
+# Build the Soldatik3D demo APK locally.
+#
+# This is the local counterpart of the Android CI job. It builds the native
+# demo library with the OpenGL ES backend and packages it into an APK using the
+# Gradle project in scripts/apk/gradle (the source of truth for CI as well).
 #
 # Usage:
-#   ./build_apk.sh <abi> [--release]
-#   ./build_apk.sh arm64-v8a
-#   ./build_apk.sh armeabi-v7a --release
+#   ./scripts/apk/build_apk.sh <abi> [--release]
+#   ./scripts/apk/build_apk.sh arm64-v8a
+#   ./scripts/apk/build_apk.sh armeabi-v7a --release
 #
-# This script:
-# 1. Builds the native library (libdemo.so) for the target ABI
-# 2. Copies it to the Gradle project's jniLibs directory
-# 3. Runs Gradle to build the APK
-# 4. Outputs the APK to apk/app-<abi>-<debug|release>.apk
-
+# Requirements:
+#   - Rust target installed (rustup target add <target>)
+#   - Android NDK r26c or newer (ANDROID_NDK_HOME, or SDK_ROOT/ndk/<version>)
+#   - Android SDK with platform 34 and build-tools 34.0.0
+#   - JDK 17+ (JAVA_HOME or java on PATH)
+#
+# Output: apk/app-<abi>-<debug|release>.apk
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT"
 
 log() { printf '\033[1;34m[apk]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[apk]\033[0m %s\n' "$*" >&2; }
@@ -33,16 +39,36 @@ RELEASE=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release) RELEASE=true ;;
-        *) warn "Unknown argument: $1" ;;
+        *)
+            err "Unknown argument: $1"
+            exit 2
+            ;;
     esac
     shift
 done
 
-# Map ABI to Rust target
 case "$ABI" in
-    arm64-v8a) RUST_TARGET="aarch64-linux-android" ;;
-    armeabi-v7a) RUST_TARGET="armv7-linux-androideabi" ;;
-    x86_64) RUST_TARGET="x86_64-linux-android" ;;
+    arm64-v8a)
+        RUST_TARGET="aarch64-linux-android"
+        NDK_LINKER="aarch64-linux-android29-clang"
+        LINKER_ENV="CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+        CC_ENV="CC_aarch64_linux_android"
+        AR_ENV="AR_aarch64_linux_android"
+        ;;
+    armeabi-v7a)
+        RUST_TARGET="armv7-linux-androideabi"
+        NDK_LINKER="armv7a-linux-androideabi29-clang"
+        LINKER_ENV="CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER"
+        CC_ENV="CC_armv7_linux_androideabi"
+        AR_ENV="AR_armv7_linux_androideabi"
+        ;;
+    x86_64)
+        RUST_TARGET="x86_64-linux-android"
+        NDK_LINKER="x86_64-linux-android29-clang"
+        LINKER_ENV="CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER"
+        CC_ENV="CC_x86_64_linux_android"
+        AR_ENV="AR_x86_64_linux_android"
+        ;;
     *)
         err "Unknown ABI: $ABI"
         exit 2
@@ -51,62 +77,66 @@ esac
 
 PROFILE="debug"
 CARGO_PROFILE_ARGS=()
+GRADLE_TASK="assembleDebug"
+APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
 if [[ "$RELEASE" == true ]]; then
     PROFILE="release"
     CARGO_PROFILE_ARGS=(--release)
+    GRADLE_TASK="assembleRelease"
+    APK_PATH="app/build/outputs/apk/release/app-release.apk"
 fi
 
-# Check for Android NDK
+# Resolve the NDK. Prefer an explicit ANDROID_NDK_HOME, then the newest NDK
+# installed under the Android SDK.
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
-    err "ANDROID_NDK_HOME not set. Please set it to your NDK path."
-    err "Example: export ANDROID_NDK_HOME=\$HOME/android-ndk-r26c"
+    for sdk in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}" "$HOME/Android/Sdk" "/opt/android-sdk"; do
+        [[ -n "$sdk" && -d "$sdk/ndk" ]] || continue
+        ANDROID_NDK_HOME="$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+        [[ -n "$ANDROID_NDK_HOME" ]] && break
+    done
+fi
+if [[ -z "${ANDROID_NDK_HOME:-}" || ! -d "$ANDROID_NDK_HOME" ]]; then
+    err "Android NDK not found."
+    err "Set ANDROID_NDK_HOME to your NDK path, e.g.:"
+    err "  export ANDROID_NDK_HOME=\$HOME/android-ndk-r26c"
     exit 1
 fi
-
-# Check for Android SDK (for Gradle)
-if [[ -z "${ANDROID_SDK_ROOT:-}" && -z "${ANDROID_HOME:-}" ]]; then
-    warn "ANDROID_SDK_ROOT/ANDROID_HOME not set. Gradle will try to download SDK."
-fi
-
-# Check for Gradle
-if ! command -v gradle &>/dev/null && [[ ! -f "./gradlew" ]]; then
-    err "Gradle not found. Install Gradle or use the included gradlew wrapper."
-    exit 1
-fi
-
-GRADLE_CMD="./gradlew"
-if command -v gradle &>/dev/null; then
-    GRADLE_CMD="gradle"
-fi
-
-log "Building for ABI: $ABI (Rust target: $RUST_TARGET, profile: $PROFILE)"
-
-# Step 1: Build the native library
-log "Building native library (libdemo.so)..."
 export ANDROID_NDK_HOME
 
-# Set up linker environment variables
-NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-case "$RUST_TARGET" in
-    aarch64-linux-android)
-        export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android29-clang"
-        export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android29-clang"
-        export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-        ;;
-    armv7-linux-androideabi)
-        export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$NDK_BIN/armv7a-linux-androideabi29-clang"
-        export CC_armv7_linux_androideabi="$NDK_BIN/armv7a-linux-androideabi29-clang"
-        export AR_armv7_linux_androideabi="$NDK_BIN/llvm-ar"
-        ;;
-    x86_64-linux-android)
-        export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$NDK_BIN/x86_64-linux-android29-clang"
-        export CC_x86_64_linux_android="$NDK_BIN/x86_64-linux-android29-clang"
-        export AR_x86_64_linux_android="$NDK_BIN/llvm-ar"
+case "$(uname -s)" in
+    Linux*) HOST_TAG="linux-x86_64" ;;
+    Darwin*) HOST_TAG="darwin-x86_64" ;;
+    MINGW* | MSYS* | CYGWIN*) HOST_TAG="windows-x86_64" ;;
+    *)
+        err "Unsupported host OS: $(uname -s)"
+        exit 1
         ;;
 esac
 
-# Build with only OpenGL ES features for Android
+NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG/bin"
+if [[ "$HOST_TAG" == "windows-x86_64" && -x "$NDK_BIN/$NDK_LINKER.cmd" ]]; then
+    NDK_LINKER="$NDK_LINKER.cmd"
+fi
+if [[ ! -x "$NDK_BIN/$NDK_LINKER" ]]; then
+    err "NDK linker not found: $NDK_BIN/$NDK_LINKER"
+    exit 1
+fi
+
+export "$LINKER_ENV=$NDK_BIN/$NDK_LINKER"
+export "$CC_ENV=$NDK_BIN/$NDK_LINKER"
+export "$AR_ENV=$NDK_BIN/llvm-ar"
+
+# JDK is required by Gradle/AGP.
+if ! command -v java >/dev/null 2>&1 && [[ -z "${JAVA_HOME:-}" ]]; then
+    err "Java not found. Install JDK 17+ and set JAVA_HOME (or put java on PATH)."
+    exit 1
+fi
+
+log "Building Soldatik3D demo for $ABI ($RUST_TARGET, $PROFILE)"
+
+log "Building native library (libdemo.so)..."
 cargo build --locked "${CARGO_PROFILE_ARGS[@]}" \
+    -p demo \
     --no-default-features --features opengl \
     --target "$RUST_TARGET"
 
@@ -116,68 +146,45 @@ if [[ ! -f "$NATIVE_LIB" ]]; then
     exit 1
 fi
 
-log "Native library built: $NATIVE_LIB"
-
-# Step 2: Prepare Gradle project
 log "Preparing Gradle project..."
-
-GRADLE_DIR="android/gradle"
+GRADLE_DIR="$ROOT/target/apk-gradle"
+TEMPLATE_DIR="$SCRIPT_DIR/gradle"
+rm -rf "$GRADLE_DIR"
 mkdir -p "$GRADLE_DIR"
+cp -a "$TEMPLATE_DIR/." "$GRADLE_DIR/"
 
-# Source of truth for Gradle template location
-# Can be overridden with GRADLE_TEMPLATE_DIR env var
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_DIR="${GRADLE_TEMPLATE_DIR:-$SCRIPT_DIR/gradle}"
-if [[ -d "$TEMPLATE_DIR" ]]; then
-    rsync -a --delete "$TEMPLATE_DIR/" "$GRADLE_DIR/"
-else
-    err "Gradle template not found at $TEMPLATE_DIR"
-    exit 1
-fi
-
-# Copy native library to jniLibs
 JNI_LIBS_DIR="$GRADLE_DIR/app/src/main/jniLibs/$ABI"
 mkdir -p "$JNI_LIBS_DIR"
 cp "$NATIVE_LIB" "$JNI_LIBS_DIR/libdemo.so"
-log "Copied libdemo.so to $JNI_LIBS_DIR"
 
-# Step 3: Build APK with Gradle
-log "Building APK with Gradle..."
+# Values consumed by app/build.gradle.kts.
+export SOLDATIK3D_ANDROID_LIB_NAME="demo"
+export SOLDATIK3D_ANDROID_APP_ID="com.soldatik3d.demo"
+export SOLDATIK3D_ANDROID_APP_NAME="Soldatik3D Demo"
 
-cd "$GRADLE_DIR"
-
-# Make gradlew executable
-chmod +x gradlew
-
-# Build
-if [[ "$RELEASE" == true ]]; then
-    $GRADLE_CMD assembleRelease
-    APK_PATH="app/build/outputs/apk/release/app-release.apk"
-    OUTPUT_APK="../../apk/app-${ABI}-release.apk"
-else
-    $GRADLE_CMD assembleDebug
-    APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-    OUTPUT_APK="../../apk/app-${ABI}-debug.apk"
+if [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then
+    printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" > "$GRADLE_DIR/local.properties"
+elif [[ -n "${ANDROID_HOME:-}" ]]; then
+    printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$GRADLE_DIR/local.properties"
 fi
 
-cd ../..
+log "Building APK with Gradle ($GRADLE_TASK)..."
+cd "$GRADLE_DIR"
+chmod +x gradlew
+./gradlew --no-daemon "$GRADLE_TASK"
 
-# Step 4: Copy APK to output directory
+cd "$ROOT"
 mkdir -p apk
-if [[ -f "$GRADLE_DIR/$APK_PATH" ]]; then
-    cp "$GRADLE_DIR/$APK_PATH" "$OUTPUT_APK"
-    log "APK built successfully: $OUTPUT_APK"
-else
+OUTPUT_APK="$ROOT/apk/app-${ABI}-${PROFILE}.apk"
+if [[ ! -f "$GRADLE_DIR/$APK_PATH" ]]; then
     err "APK not found at $GRADLE_DIR/$APK_PATH"
     exit 1
 fi
+cp "$GRADLE_DIR/$APK_PATH" "$OUTPUT_APK"
 
-# Step 5: Verify APK
-if command -v aapt2 &>/dev/null || command -v aapt &>/dev/null; then
-    log "Verifying APK contents..."
-    AAPT_CMD="aapt2"
-    command -v aapt2 &>/dev/null || AAPT_CMD="aapt"
-    $AAPT_CMD list "$OUTPUT_APK" | grep -E "libdemo\.so|AndroidManifest" | head -10
+if command -v aapt2 >/dev/null 2>&1; then
+    log "APK contents:"
+    aapt2 dump badging "$OUTPUT_APK" 2>/dev/null | grep -E "package:|native-code|launchable-activity" || true
 fi
 
 log "Done! APK ready at: $OUTPUT_APK"

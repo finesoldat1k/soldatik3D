@@ -1,369 +1,209 @@
-# Cross-Compilation Guide
+# Cross-Compilation
 
-Build Soldatik3D games for all platforms from a single Linux machine.
+The engine ships two tools for building other targets:
 
-## Overview
+- `scripts/cross_build.sh` — builds the engine demo and `s3d` into relocatable
+  local packages under `dist/`.
+- `s3d build` — builds a generated game project with Cargo and copies the
+  artifact to an output directory.
 
-| Host → Target | Method | Backend | Difficulty |
-|---------------|--------|---------|------------|
-| Linux → Linux | Native | Vulkan + OpenGL | Easy |
-| Linux → Windows | MinGW-w64 | OpenGL only | Medium |
-| Linux → Android | NDK | OpenGL ES | Medium |
-| Windows → Linux | WSL2/Cross | Vulkan + OpenGL | Hard |
-| Windows → Android | NDK | OpenGL ES | Medium |
-| macOS → Any | Not supported | - | - |
+Both are thin wrappers around Cargo. They do not use Docker or a custom build
+system.
 
-## Linux Host (Recommended)
+## Supported targets
 
-### Prerequisites
+| Host | Target | Compiler | Backends |
+|------|--------|----------|----------|
+| Linux | Linux x86_64 | native `cc` | Vulkan + OpenGL |
+| Linux | Windows x86_64 | MinGW-w64 (`x86_64-w64-mingw32-gcc`) | OpenGL |
+| Linux | Android arm64-v8a | NDK r26c | OpenGL ES 3.0 |
+| Linux | Android armeabi-v7a | NDK r26c | OpenGL ES 3.0 |
+| Linux | Android x86_64 | NDK r26c | OpenGL ES 3.0 |
+| Windows | Windows x86_64 | MSVC | Vulkan + OpenGL |
+| Windows | Android (from Windows) | NDK r26c | OpenGL ES 3.0 |
 
-```bash
-# Install cross-compilation toolchains
-sudo apt-get update
-sudo apt-get install -y \
-    mingw-w64 \           # Windows MinGW
-    gcc-aarch64-linux-gnu \ # Linux ARM64 (optional)
-    gcc-arm-linux-gnueabihf # Linux ARMv7 (optional)
+macOS, iOS and WebAssembly are not supported.
 
-# Android NDK
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+## `scripts/cross_build.sh`
 
-# Add Rust targets
-rustup target add \
-    x86_64-pc-windows-gnu \
-    aarch64-linux-android \
-    armv7-linux-androideabi \
-    x86_64-linux-android
-```
-
-### Using cross_build.sh
+Run it from anywhere; the script resolves the repository root itself.
 
 ```bash
-# From Soldatik3D engine root
-./cross_build.sh linux --release      # Linux x86_64
-./cross_build.sh windows --release    # Windows MinGW (OpenGL only)
-./cross_build.sh android arm64-v8a --release
-./cross_build.sh android armeabi-v7a --release
-./cross_build.sh all --release        # All platforms
+./scripts/cross_build.sh <platform> [abi] [--release]
 ```
 
-Output in `dist/`:
-```
-dist/
-├── linux-x86_64/
-│   ├── your_game
-│   └── libyour_game.rlib
-├── windows-x86_64/
-│   ├── your_game.exe
-│   └── libyour_game.rlib
-├── android-arm64-v8a/
-│   └── aarch64-linux-android/
-│       └── libyour_game.so
-└── android-armeabi-v7a/
-    └── armv7-linux-androideabi/
-        └── libyour_game.so
-```
+| Platform | Extra argument | Output |
+|----------|----------------|--------|
+| `linux` | — | `dist/linux-x86_64/` |
+| `windows` | — | `dist/windows-x86_64/` |
+| `android` | `arm64-v8a`, `armeabi-v7a`, `x86_64` | `dist/android-<abi>/` |
+| `all` | — | all of the above |
 
-### Using CLI Tool
+Examples:
 
 ```bash
-# Build for specific target
-soldatik3d build --target windows --release
-soldatik3d build --target android --release
-
-# Export all platforms
-soldatik3d export --platforms linux,windows,android --out-dir dist
+./scripts/cross_build.sh linux --release
+./scripts/cross_build.sh windows --release
+ANDROID_NDK_HOME=$HOME/android-ndk-r26c \
+  ./scripts/cross_build.sh android arm64-v8a --release
+ANDROID_NDK_HOME=$HOME/android-ndk-r26c ./scripts/cross_build.sh all --release
 ```
 
-## Windows Target (MinGW)
+### Linux package
 
-### Toolchain Setup
+The Linux script builds `s3d`, the `runtime` rlib and the demo, then copies
+them into `dist/linux-x86_64/`:
+
+```text
+dist/linux-x86_64/
+├── demo
+├── libruntime.rlib
+├── libshaderc.so.1
+├── libvulkan.so.1
+└── s3d
+```
+
+The executables receive an `$ORIGIN` rpath so `libshaderc.so.1` and
+`libvulkan.so.1` are found next to them. The package can be copied to another
+Linux machine with a compatible glibc and run without installing shaderc.
+
+If a library is missing on the build machine, the script warns and the binary
+falls back to the system loader path.
+
+### Windows package
+
+The Windows cross build uses the `x86_64-pc-windows-gnu` target and the OpenGL
+backend only:
+
+```text
+dist/windows-x86_64/
+├── demo.exe
+├── libruntime.rlib
+└── s3d.exe
+```
+
+Requirements:
 
 ```bash
-# Ubuntu/Debian
 sudo apt-get install mingw-w64
-
-# Fedora
-sudo dnf install mingw64-gcc mingw64-gcc-c++ mingw64-winpthreads
-
-# Arch
-sudo pacman -S mingw-w64-gcc mingw-w64-binutils mingw-w64-winpthreads
+rustup target add x86_64-pc-windows-gnu
 ```
 
-### Cargo Configuration
+The output is not tested automatically: run it on Windows or under Wine.
 
-```toml
-# .cargo/config.toml
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-gcc-ar"
-runner = "wine64"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=lld",
-  "-C", "link-arg=-static",
-]
+### Android package
+
+The Android build produces a native `libdemo.so`:
+
+```text
+dist/android-arm64-v8a/
+└── libdemo.so
 ```
 
-### Build Command
+This is a raw shared library for embedding, not an APK. To create an
+installable APK, use `scripts/apk/build_apk.sh` or `s3d apk` in a generated
+project. See the [Android guide](android.md).
+
+## `s3d build`
+
+Inside a generated project:
 
 ```bash
-cargo build --target x86_64-pc-windows-gnu --release
-
-# Binary: target/x86_64-pc-windows-gnu/release/your_game.exe
+s3d build linux
+s3d build windows --release
+s3d build android
+s3d build all --release --out-dir dist
 ```
 
-### Limitations
+| Option | Meaning |
+|--------|---------|
+| `TARGET` | `linux`, `windows`, `android`, `all`; default `linux` |
+| `-r`, `--release` | Build with Cargo's release profile |
+| `-f`, `--features` | Cargo features; default `vulkan,opengl` |
+| `-o`, `--out-dir` | Copy the artifact here; default: leave it in `target/` |
 
-| Feature | Support |
-|---------|---------|
-| Vulkan | ❌ (shaderc C++ build fails) |
-| OpenGL | ✅ Full support |
-| Dynamic linking | ⚠️ Static preferred |
-| Wine testing | ✅ `wine64 your_game.exe` |
+Default feature sets per target:
 
-### Testing with Wine
+| Target | Rust target | Features |
+|--------|-------------|----------|
+| Linux | host | `vulkan,opengl` |
+| Windows | `x86_64-pc-windows-gnu` | `opengl` |
+| Android | `aarch64-linux-android` | `opengl` |
+
+For Android, `s3d build` uses `ANDROID_NDK_HOME` to configure the linker and
+copies `lib<package>.so` to the output directory. It does not build an APK.
+
+`--features` is passed through verbatim for Linux. Use
+`--features opengl` if you do not have shaderc installed.
+
+## `s3d export`
+
+`s3d export` is a convenience wrapper that builds the project for several
+platforms in release mode:
 
 ```bash
-# Install Wine
-sudo apt-get install wine64
-
-# Run
-wine64 target/x86_64-pc-windows-gnu/release/your_game.exe
-
-# With OpenGL backend
-SOLDATIK3D_BACKEND=opengl wine64 target/.../your_game.exe
+s3d export
+s3d export --platforms linux,windows --out-dir dist
 ```
 
-## Android Target
+It writes the artifacts directly into the output directory (default `dist/`):
 
-### NDK Setup
+| File | Platform |
+|------|----------|
+| `<package>` | Linux executable |
+| `<package>.exe` | Windows executable |
+| `lib<package>-arm64-v8a.so` | Android arm64 |
+| `lib<package>-armeabi-v7a.so` | Android armv7 |
 
-```bash
-# Download NDK r26c+
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+No archives or APKs are produced. `s3d export` always uses the release profile.
+On Linux, Windows export requires MinGW; Android export requires the NDK. On a
+Windows host, `s3d export` uses MSVC for the Windows artifact and Linux
+cross-compilation is unavailable, so pass `--platforms windows,android`.
 
-# Verify
-ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-```
+For a relocatable Linux bundle with the shared libraries and `$ORIGIN` rpath,
+use `./scripts/cross_build.sh linux --release` instead.
 
-### Rust Targets
+## Manual Cargo commands
 
-```bash
-rustup target add \
-    aarch64-linux-android \
-    armv7-linux-androideabi \
-    x86_64-linux-android
-```
-
-### Linker Environment
-
-The build script sets these automatically:
+The wrappers do not hide anything. Equivalent manual commands:
 
 ```bash
-# For aarch64-linux-android
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_BIN/aarch64-linux-android29-clang
-export CC_aarch64_linux_android=$NDK_BIN/aarch64-linux-android29-clang
-export AR_aarch64_linux_android=$NDK_BIN/llvm-ar
+# Linux
+cargo build --release -p demo --features vulkan,opengl
 
-# For armv7-linux-androideabi
-export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK_BIN/armv7a-linux-androideabi29-clang
-export CC_armv7_linux_androideabi=$NDK_BIN/armv7a-linux-androideabi29-clang
-export AR_armv7_linux_androideabi=$NDK_BIN/llvm-ar
-```
-
-### Build Commands
-
-```bash
-# ARM64 (modern devices)
-cargo build --target aarch64-linux-android --release \
+# Windows from Linux (OpenGL only)
+cargo build --release -p demo --target x86_64-pc-windows-gnu \
   --no-default-features --features opengl
 
-# ARMv7 (older devices)
-cargo build --target armv7-linux-androideabi --release \
-  --no-default-features --features opengl
-
-# x86_64 (emulators)
-cargo build --target x86_64-linux-android --release \
+# Android from Linux
+export NDK=$HOME/android-ndk-r26c/toolchains/llvm/prebuilt/linux-x86_64/bin
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android29-clang
+export CC_aarch64_linux_android=$NDK/aarch64-linux-android29-clang
+export AR_aarch64_linux_android=$NDK/llvm-ar
+cargo build --release --target aarch64-linux-android \
   --no-default-features --features opengl
 ```
 
-### APK Building
+## Why MinGW uses OpenGL only
 
-```bash
-# Requires Android SDK + Gradle
-./build_apk.sh arm64-v8a --release
-./build_apk.sh armeabi-v7a --release
-```
-
-## CI/CD Pipeline
-
-### GitHub Actions Matrix
-
-```yaml
-# .github/workflows/cross-compile.yml
-name: Cross-Platform Build
-
-on: [push, pull_request]
-
-jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-x86_64
-          path: target/release/*
-
-  windows:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install MinGW
-        run: sudo apt-get install -y mingw-w64
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: windows-gnu
-      - run: cargo build --locked --release --target x86_64-pc-windows-gnu
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-x86_64
-          path: target/x86_64-pc-windows-gnu/release/*
-
-  android:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-linux-android
-            abi: arm64-v8a
-          - target: armv7-linux-androideabi
-            abi: armeabi-v7a
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26c
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android-${{ matrix.abi }}
-      - name: Configure NDK linker
-        run: |
-          NDK_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
-          echo "CARGO_TARGET_${{ matrix.target | upper | replace('-', '_') }}_LINKER=$NDK_BIN/${{ matrix.abi == 'arm64-v8a' && 'aarch64-linux-android29-clang' || 'armv7a-linux-androideabi29-clang' }}" >> $GITHUB_ENV
-      - run: cargo build --locked --release --no-default-features --features opengl --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-${{ matrix.abi }}
-          path: target/${{ matrix.target }}/release/lib*.so
-```
-
-## Docker for Reproducible Builds
-
-### Dockerfile
-
-```dockerfile
-# Dockerfile.cross
-FROM ubuntu:24.04
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl git build-essential pkg-config cmake ninja-build \
-    libvulkan-dev libshaderc-dev \
-    libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
-    libxkbcommon-dev libwayland-dev \
-    libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
-    mingw-w64 \
-    clang lld \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup default stable && \
-    rustup target add x86_64-pc-windows-gnu aarch64-linux-android armv7-linux-androideabi
-
-# Install Android NDK
-ARG NDK_VERSION=r26c
-RUN cd /opt && \
-    wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip && \
-    unzip -q android-ndk-${NDK_VERSION}-linux.zip && \
-    rm android-ndk-${NDK_VERSION}-linux.zip
-ENV ANDROID_NDK_HOME=/opt/android-ndk-${NDK_VERSION}
-
-WORKDIR /workspace
-```
-
-### Build with Docker
-
-```bash
-# Build image
-docker build -f Dockerfile.cross -t soldatik3d-cross .
-
-# Run build
-docker run --rm -v $(pwd):/workspace soldatik3d-cross \
-  bash -c "cd /workspace && ./cross_build.sh all --release"
-
-# Artifacts in ./dist/
-```
+The Vulkan backend's shader compiler (`shaderc-sys`) is built through CMake and
+does not cross-compile cleanly to `x86_64-pc-windows-gnu`. The OpenGL backend
+has no such dependency. Native MSVC Windows builds support both backends.
 
 ## Troubleshooting
 
-### MinGW: `error: linking with 'cc' failed`
+| Problem | Fix |
+|---------|-----|
+| `linker 'x86_64-w64-mingw32-gcc' not found` | Install `mingw-w64` |
+| `can't find crate for 'std'` | `rustup target add <target>` |
+| Android linker not found | Set `ANDROID_NDK_HOME` to a complete NDK; check the host tag (`linux-x86_64`, `darwin-x86_64`, `windows-x86_64`) |
+| `libshaderc` missing in the Linux package | Install `libshaderc-dev` before building, or set `SHADERC_LIB_DIR` |
+| `s3d build android` cannot find `build_apk.sh` | That error belongs to `s3d apk`; run it from the project root |
+| Windows binary does not start | Install the MinGW runtime or run it on a system with the matching DLLs; test under Wine |
 
-```bash
-# Ensure static linking
-export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-Clink-arg=-static -Clink-arg=-fuse-ld=lld"
+## Next steps
 
-# Or use mold linker (faster)
-sudo apt-get install mold
-export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-Clink-arg=-fuse-ld=mold"
-```
-
-### Android: `failed to find tool "aarch64-linux-android-clang"`
-
-```bash
-# NDK not in PATH or wrong version
-export ANDROID_NDK_HOME=/correct/path/to/ndk
-# Verify:
-ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-```
-
-### Windows: `LINK : fatal error LNK1181`
-
-```bash
-# Missing Vulkan library for MinGW
-# OpenGL only for MinGW - ensure features = ["opengl"]
-cargo build --target x86_64-pc-windows-gnu --no-default-features --features opengl
-```
-
-### Cross-compile standard library
-
-```bash
-# If you need custom std
-rustup component add rust-src --toolchain stable
-cargo build -Zbuild-std=std,panic_abort --target x86_64-pc-windows-gnu
-# Requires nightly
-```
-
-## Best Practices
-
-1. **Use `cross_build.sh`** - Handles all environment setup
-2. **Cache cargo registry** - Speeds up CI significantly
-3. **Test on target** - Wine for Windows, emulator/device for Android
-4. **Static linking for Windows** - Avoids DLL hell
-5. **Release profile optimization** - `lto = "thin"`, `codegen-units = 1`
-6. **Separate cargo targets** - Different `target/` dirs per platform
-
----
-
-*See platform-specific guides: [Linux](linux.md), [Windows](windows.md), [Android](android.md)*
+- [Linux](linux.md)
+- [Windows](windows.md)
+- [Android](android.md)
+- [CI and releases](../CI.md)

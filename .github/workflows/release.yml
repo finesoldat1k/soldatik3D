@@ -58,42 +58,75 @@ jobs:
           key: release-linux
 
       - name: Build engine (runtime)
-        env:
-          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$$ORIGIN -C link-arg=-Wl,--enable-new-dtags'
         run: cargo build --locked --release -p runtime --all-features
 
       - name: Build demo game
         env:
-          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$$ORIGIN -C link-arg=-Wl,--enable-new-dtags'
+          # Find bundled shared libraries next to the executable.
+          RUSTFLAGS: '-C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags'
         run: cargo build --locked --release -p demo --all-features
+
+      - name: Build s3d CLI
+        run: cargo build --locked --release -p s3d
 
       - name: Package release artifacts
         run: |
-          mkdir -p dist/engine dist/demo
+          mkdir -p dist/engine dist/demo dist/cli/bin
           cp target/release/libruntime.rlib dist/engine/
           cp target/release/demo dist/demo/
-          # Copy required shared libraries for portable distribution
-          # libshaderc is needed for Vulkan backend shader compilation
-          cp /usr/lib/x86_64-linux-gnu/libshaderc.so.1 dist/demo/ 2>/dev/null || \
-            cp /usr/lib/libshaderc.so.1 dist/demo/ 2>/dev/null || true
-          # Vulkan loader
-          cp /usr/lib/x86_64-linux-gnu/libvulkan.so.1 dist/demo/ 2>/dev/null || true
+
+          # The CLI archive is a toolkit, not a single binary: `s3d new`
+          # resolves templates/game and the runtime path relative to bin/s3d.
+          cp target/release/s3d dist/cli/bin/
+          cp -a templates dist/cli/
+          cp -a crates dist/cli/
+          mkdir -p dist/cli/examples
+          cp -a examples/demo dist/cli/examples/
+          cp Cargo.toml Cargo.lock README.md LICENSE dist/cli/
+
+          copy_library() {
+            local name="$1"
+            shift
+            for candidate in "$@"; do
+              if [ -e "$candidate" ]; then
+                cp -L "$candidate" "dist/demo/$name"
+                echo "Bundled $name from $candidate"
+                return 0
+              fi
+            done
+            echo "warning: could not find $name" >&2
+            return 1
+          }
+
+          # The release binary links libshaderc dynamically. Ubuntu packages
+          # the same library as libshaderc_shared.so.1; ship it under the name
+          # the ELF loader asks for.
+          copy_library libshaderc.so.1 \
+            /usr/lib/x86_64-linux-gnu/libshaderc.so.1 \
+            /usr/lib/libshaderc.so.1 \
+            /usr/lib/x86_64-linux-gnu/libshaderc_shared.so.1 \
+            /usr/lib/libshaderc_shared.so.1 || true
+          copy_library libvulkan.so.1 \
+            /usr/lib/x86_64-linux-gnu/libvulkan.so.1 \
+            /usr/lib/libvulkan.so.1 || true
+
           cat > dist/demo/README.txt <<'EOF'
           Soldatik3D demo game (Linux x86_64)
 
           Run ./demo from a terminal. The engine picks Vulkan by default.
           Override it with SOLDATIK3D_BACKEND=opengl if needed.
           Set SOLDATIK3D_VSYNC=off for uncapped frame rate.
-          
+
           Required libraries (included):
           - libshaderc.so.1 (Vulkan shader compilation)
           - libvulkan.so.1 (Vulkan loader)
-          
-          The binary uses \$ORIGIN rpath, so libraries in the same directory
-          will be found automatically. Just run ./demo
+
+          The binary uses an $ORIGIN rpath, so libraries in the same directory
+          are found automatically. Just run ./demo
           EOF
           tar -czf dist/soldatik3d-engine-linux-x86_64.tar.gz -C dist/engine .
           tar -czf dist/soldatik3d-demo-linux-x86_64.tar.gz -C dist/demo .
+          tar -czf dist/soldatik3d-cli-linux-x86_64.tar.gz -C dist/cli .
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -124,10 +157,13 @@ jobs:
       - name: Build demo game
         run: cargo build --locked --release -p demo --all-features
 
+      - name: Build s3d CLI
+        run: cargo build --locked --release -p s3d
+
       - name: Package release artifacts
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\engine, dist\demo | Out-Null
+          New-Item -ItemType Directory -Force -Path dist\engine, dist\demo, dist\cli\bin | Out-Null
           Copy-Item target\release\libruntime.rlib dist\engine\
           Copy-Item target\release\demo.exe dist\demo\
           @'
@@ -137,8 +173,19 @@ jobs:
           Override it with SOLDATIK3D_BACKEND=opengl if needed.
           Set SOLDATIK3D_VSYNC=off for uncapped frame rate.
           '@ | Set-Content -Encoding utf8 dist\demo\README.txt
+
+          # CLI toolkit: bin/s3d.exe plus the template and engine sources it
+          # needs for `s3d new`.
+          Copy-Item target\release\s3d.exe dist\cli\bin\
+          Copy-Item templates dist\cli\templates -Recurse
+          Copy-Item crates dist\cli\crates -Recurse
+          New-Item -ItemType Directory -Force -Path dist\cli\examples | Out-Null
+          Copy-Item examples\demo dist\cli\examples\demo -Recurse
+          Copy-Item Cargo.toml, Cargo.lock, README.md, LICENSE dist\cli\
+
           Compress-Archive -Force -Path dist\engine\* -DestinationPath dist\soldatik3d-engine-windows-x86_64.zip
           Compress-Archive -Force -Path dist\demo\* -DestinationPath dist\soldatik3d-demo-windows-x86_64.zip
+          Compress-Archive -Force -Path dist\cli\* -DestinationPath dist\soldatik3d-cli-windows-x86_64.zip
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -177,6 +224,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -187,8 +240,12 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -x "$NDK_BIN/${{ matrix.linker }}"
           echo "${{ matrix.linker_env }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
-          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
-          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          # cc-rs expects the target triple with '-' replaced by '_' in
+          # CC_<triple> / AR_<triple> variable names.
+          TRIPLE="${{ matrix.target }}"
+          TRIPLE_US="${TRIPLE//-/_}"
+          echo "CC_$TRIPLE_US=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "AR_$TRIPLE_US=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
 
       - name: Build engine (runtime, OpenGL ES)
         run: |
@@ -205,23 +262,24 @@ jobs:
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          ndk-version: r26c
-          cmake-version: 3.22.1
+          cmdline-tools-version: latest
+          accept-android-sdk-licenses: true
+          packages: "platforms;android-34 build-tools;34.0.0 platform-tools"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build APK
+        env:
+          SOLDATIK3D_ANDROID_LIB_NAME: demo
+          SOLDATIK3D_ANDROID_APP_ID: com.soldatik3d.demo
+          SOLDATIK3D_ANDROID_APP_NAME: Soldatik3D Demo
         run: |
-          # Build native libraries first (already done above)
-          # Now build the APK using the gradle template from scripts/apk/
           GRADLE_DIR="android/gradle"
+          rm -rf "$GRADLE_DIR"
           mkdir -p "$GRADLE_DIR"
-          # Use the source of truth Gradle template from scripts/apk/gradle/
-          rsync -a --delete "scripts/apk/gradle/" "$GRADLE_DIR/"
-          
-          # Copy native library to jniLibs
+          cp -a scripts/apk/gradle/. "$GRADLE_DIR/"
+
           ABI="${{ matrix.abi }}"
           RUST_TARGET="${{ matrix.target }}"
           PROFILE="release"
@@ -229,17 +287,24 @@ jobs:
           JNI_LIBS_DIR="$GRADLE_DIR/app/src/main/jniLibs/$ABI"
           mkdir -p "$JNI_LIBS_DIR"
           cp "$NATIVE_LIB" "$JNI_LIBS_DIR/libdemo.so"
-          
+
           cd "$GRADLE_DIR"
           chmod +x gradlew
-          ./gradlew assembleRelease
-          
-          # Copy APK to dist
+          ./gradlew --no-daemon assembleRelease
+
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           OUTPUT_APK="../../apk/app-${{ matrix.abi }}-release.apk"
           mkdir -p ../../apk
           cp "$APK_PATH" "$OUTPUT_APK"
           cd ../..
+
+      - name: Verify APK
+        run: |
+          APK="apk/app-${{ matrix.abi }}-release.apk"
+          test -f "$APK"
+          unzip -Z1 "$APK" | grep -Fx "lib/${{ matrix.abi }}/libdemo.so"
+          unzip -Z1 "$APK" | grep -Fx "AndroidManifest.xml"
+          echo "Release APK contents verified: $APK"
 
       - name: Package release artifacts
         run: |
@@ -293,7 +358,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/**/*.tar.gz
-            release/**/*.zip
+            release/*.tar.gz
+            release/*.zip
+            release/*.apk
           fail_on_unmatched_files: true
           prerelease: ${{ github.event.release.prerelease }}

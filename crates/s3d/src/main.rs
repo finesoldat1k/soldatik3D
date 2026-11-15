@@ -130,6 +130,7 @@ enum TargetPlatform {
 enum Abi {
     Arm64V8a,
     ArmeabiV7a,
+    #[value(name = "x86_64", alias = "x86-64")]
     X86_64,
 }
 
@@ -173,6 +174,7 @@ fn main() -> Result<()> {
 
 fn cmd_new(name: String, dir: Option<PathBuf>, template: Option<String>) -> Result<()> {
     let target_dir = dir.unwrap_or_else(|| PathBuf::from(".")).join(&name);
+    let package_name = to_snake_case(&name);
 
     if target_dir.exists() {
         anyhow::bail!("Directory '{}' already exists", target_dir.display());
@@ -209,7 +211,7 @@ fn cmd_new(name: String, dir: Option<PathBuf>, template: Option<String>) -> Resu
     };
 
     pb.set_message("Copying template files...");
-    copy_template(&template_dir, &target_dir, &name)?;
+    copy_template(&template_dir, &target_dir, &package_name)?;
     pb.inc(1);
 
     // Initialize git repo
@@ -247,30 +249,50 @@ fn cmd_new(name: String, dir: Option<PathBuf>, template: Option<String>) -> Resu
 }
 
 fn find_template_dir() -> Result<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../templates/game"),
-        PathBuf::from("/usr/share/s3d/templates/game"),
+    let mut candidates = Vec::new();
+
+    // Prefer templates shipped next to the executable. This makes an extracted
+    // CLI toolkit use its own copy even if the checkout it was built from still
+    // exists on the machine (for example during local testing).
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        candidates.push(exe_dir.join("../templates/game"));
+        candidates.push(exe_dir.join("../../templates/game"));
+    }
+
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../templates/game"));
+    candidates.push(PathBuf::from("/usr/share/s3d/templates/game"));
+    candidates.push(
         dirs::data_dir()
             .map(|d| d.join("s3d/templates/game"))
             .unwrap_or_default(),
-    ];
-
-    // Also check relative to the current executable
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join("../templates/game"));
-            candidates.push(exe_dir.join("../../templates/game"));
-            candidates.push(exe_dir.join("../templates/game"));
-        }
-    }
+    );
 
     for c in candidates {
-        if c.exists() {
+        if c.join("Cargo.toml").exists() {
             return Ok(c);
         }
     }
 
     anyhow::bail!("Template directory not found. Install s3d or specify --template path.");
+}
+
+fn find_engine_root(template_dir: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(explicit) = std::env::var("SOLDATIK3D_ENGINE") {
+        candidates.push(PathBuf::from(explicit));
+    }
+    // templates/game -> repository root
+    if let Some(root) = template_dir.parent().and_then(Path::parent) {
+        candidates.push(root.to_path_buf());
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+
+    candidates
+        .into_iter()
+        .find(|root| root.join("crates/runtime/Cargo.toml").is_file())
+        .map(|root| root.canonicalize().unwrap_or(root))
 }
 
 fn copy_template(src: &Path, dst: &Path, project_name: &str) -> Result<()> {
@@ -281,26 +303,104 @@ fn copy_template(src: &Path, dst: &Path, project_name: &str) -> Result<()> {
 
     fs_extra::dir::copy(src, dst, &options).context("Failed to copy template")?;
 
-    // Replace placeholders in files
-    replace_in_file(dst.join("Cargo.toml"), "my_game", project_name)?;
-    replace_in_file(dst.join("README.md"), "my_game", project_name)?;
-    replace_in_file(
-        dst.join("src/lib.rs"),
-        "MyGame",
-        &to_pascal_case(project_name),
-    )?;
+    let pascal_name = to_pascal_case(project_name);
+    replace_in_tree(dst, "my_game", project_name)?;
+    replace_in_tree(dst, "MyGame", &pascal_name)?;
+
+    // Replace the template's relative runtime path with a path that points at
+    // the engine checkout that created this project. This makes `s3d new`
+    // work from any directory, not only from the engine repository root.
+    if let Some(root) = find_engine_root(src) {
+        let runtime_dir = root.join("crates/runtime");
+        let relative = relative_path(dst, &runtime_dir);
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        replace_in_tree(dst, "../crates/runtime", &relative)?;
+    }
 
     Ok(())
 }
 
-fn replace_in_file(path: PathBuf, from: &str, to: &str) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+fn replace_in_tree(root: &Path, from: &str, to: &str) -> Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".git" | "target" | "apk" | "build")
+            ) {
+                continue;
+            }
+            replace_in_tree(&path, from, to)?;
+            continue;
+        }
+
+        // Skip binary files: the Gradle wrapper JAR and images must not be
+        // decoded as UTF-8.
+        if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("jar" | "png" | "jpg" | "jpeg" | "gif" | "ico" | "so" | "dll" | "exe")
+        ) {
+            continue;
+        }
+
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if content.contains(from) {
+            fs::write(&path, content.replace(from, to))?;
+        }
     }
-    let content = fs::read_to_string(&path)?;
-    let new_content = content.replace(from, to);
-    fs::write(path, new_content)?;
     Ok(())
+}
+
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = from.canonicalize().unwrap_or_else(|_| from.to_path_buf());
+    let to = to.canonicalize().unwrap_or_else(|_| to.to_path_buf());
+
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    let common = from_components
+        .iter()
+        .zip(to_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = PathBuf::new();
+    for _ in common..from_components.len() {
+        result.push("..");
+    }
+    for component in &to_components[common..] {
+        result.push(component.as_os_str());
+    }
+    result
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut previous_was_lower = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if c.is_uppercase() && previous_was_lower {
+                result.push('_');
+            }
+            result.extend(c.to_lowercase());
+            previous_was_lower = c.is_lowercase() || c.is_numeric();
+        } else {
+            if !result.ends_with('_') && !result.is_empty() {
+                result.push('_');
+            }
+            previous_was_lower = false;
+        }
+    }
+    let result = result.trim_matches('_').to_string();
+    if result.is_empty() {
+        "game".to_string()
+    } else if result.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("game_{result}")
+    } else {
+        result
+    }
 }
 
 fn to_pascal_case(s: &str) -> String {
@@ -321,19 +421,33 @@ fn cmd_build(
     features: String,
     out_dir: Option<PathBuf>,
 ) -> Result<()> {
-    println!("{} Building for {:?}...", style("→").green().bold(), target);
+    let project = read_project_name()?;
+    println!(
+        "{} Building {} for {:?}...",
+        style("→").green().bold(),
+        project,
+        target
+    );
 
     let targets = match target {
-        TargetPlatform::All => vec![
-            TargetPlatform::Linux,
-            TargetPlatform::Windows,
-            TargetPlatform::Android,
-        ],
+        TargetPlatform::All => {
+            if cfg!(target_os = "windows") {
+                // Linux cross-compilation is not configured by s3d. On a
+                // Windows host, "all" means all locally buildable targets.
+                vec![TargetPlatform::Windows, TargetPlatform::Android]
+            } else {
+                vec![
+                    TargetPlatform::Linux,
+                    TargetPlatform::Windows,
+                    TargetPlatform::Android,
+                ]
+            }
+        }
         t => vec![t],
     };
 
     for t in targets {
-        build_for_target(t, release, &features, out_dir.as_deref())?;
+        build_for_target(t, release, &features, out_dir.as_deref(), &project)?;
     }
 
     println!("{} Build complete!", style("✓").green().bold());
@@ -345,57 +459,95 @@ fn build_for_target(
     release: bool,
     features: &str,
     out_dir: Option<&Path>,
+    project: &str,
 ) -> Result<()> {
     let profile_args = if release { vec!["--release"] } else { vec![] };
 
     match target {
         TargetPlatform::Linux => {
+            if cfg!(target_os = "windows") {
+                anyhow::bail!(
+                    "Linux builds are not available on a Windows host. Use `s3d build windows` \
+                     or build the Linux target on Linux."
+                );
+            }
             println!("  Building for Linux x86_64...");
-            run_cargo_build("", &profile_args, features)?;
+            run_cargo_build(project, "", &profile_args, features)?;
         }
         TargetPlatform::Windows => {
-            println!("  Building for Windows x86_64 (MinGW)...");
-            // Check for MinGW
-            if !Command::new("x86_64-w64-mingw32-gcc")
-                .arg("--version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
-                anyhow::bail!("MinGW-w64 not found. Install with: sudo apt-get install mingw-w64");
+            if cfg!(target_os = "windows") {
+                println!("  Building for Windows x86_64 (MSVC)...");
+                run_cargo_build(project, "", &profile_args, features)?;
+            } else {
+                println!("  Building for Windows x86_64 (MinGW, OpenGL only)...");
+                if !Command::new("x86_64-w64-mingw32-gcc")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    anyhow::bail!(
+                        "MinGW-w64 not found. Install with: sudo apt-get install mingw-w64"
+                    );
+                }
+                // The Vulkan backend is not available for MinGW cross-builds.
+                run_cargo_build(project, "x86_64-pc-windows-gnu", &profile_args, "opengl")?;
             }
-            run_cargo_build("x86_64-pc-windows-gnu", &profile_args, features)?;
         }
         TargetPlatform::Android => {
-            println!("  Building for Android (arm64-v8a, armeabi-v7a)...");
+            println!("  Building for Android (arm64-v8a, armeabi-v7a, OpenGL ES)...");
             check_android_setup()?;
-            run_cargo_build("aarch64-linux-android", &profile_args, "opengl")?;
-            run_cargo_build("armv7-linux-androideabi", &profile_args, "opengl")?;
+            run_cargo_build(project, "aarch64-linux-android", &profile_args, "opengl")?;
+            run_cargo_build(project, "armv7-linux-androideabi", &profile_args, "opengl")?;
         }
         TargetPlatform::All => unreachable!(),
     }
 
-    // Copy artifacts to output directory if specified
     if let Some(out) = out_dir {
-        copy_artifacts(target, release, out)?;
+        copy_artifacts(target, release, out, project)?;
     }
 
     Ok(())
 }
 
-fn run_cargo_build(target: &str, profile_args: &[&str], features: &str) -> Result<()> {
-    let mut args = vec!["build", "--locked"];
+fn read_project_name() -> Result<String> {
+    let cargo_toml = PathBuf::from("Cargo.toml");
+    let content = fs::read_to_string(&cargo_toml)
+        .with_context(|| format!("Cannot read {}", cargo_toml.display()))?;
+    let document: toml::Value = content.parse().context("Invalid Cargo.toml")?;
+    document
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(|name| name.as_str())
+        .map(str::to_owned)
+        .context("Cargo.toml has no [package] name; run s3d from a game project root")
+}
+
+fn run_cargo_build(
+    project: &str,
+    target: &str,
+    profile_args: &[&str],
+    features: &str,
+) -> Result<()> {
+    let mut args = vec!["build", "-p", project];
     args.extend(profile_args);
-    args.extend(["-p", "my_game"]);
-    args.extend(["--features", features]);
+    if !features.is_empty() {
+        args.extend(["--no-default-features", "--features", features]);
+    }
     if !target.is_empty() {
         args.extend(["--target", target]);
     }
 
-    let status = Command::new("cargo")
-        .args(&args)
-        .status()
-        .context("Failed to run cargo")?;
+    let mut command = Command::new("cargo");
+    command.args(&args);
+    if target.starts_with("aarch64-linux-android")
+        || target.starts_with("armv7-linux-androideabi")
+        || target.starts_with("x86_64-linux-android")
+    {
+        configure_android_linker(&mut command, target)?;
+    }
+
+    let status = command.status().context("Failed to run cargo")?;
 
     if !status.success() {
         anyhow::bail!(
@@ -407,33 +559,133 @@ fn run_cargo_build(target: &str, profile_args: &[&str], features: &str) -> Resul
     Ok(())
 }
 
+fn find_android_ndk() -> Result<PathBuf> {
+    if let Ok(explicit) = std::env::var("ANDROID_NDK_HOME")
+        && !explicit.is_empty()
+    {
+        let path = PathBuf::from(explicit);
+        if path.is_dir() {
+            return Ok(path);
+        }
+    }
+
+    for variable in ["ANDROID_SDK_ROOT", "ANDROID_HOME"] {
+        let Ok(sdk) = std::env::var(variable) else {
+            continue;
+        };
+        let ndk_dir = PathBuf::from(sdk).join("ndk");
+        let newest = fs::read_dir(&ndk_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.path())
+            .max();
+        if let Some(path) = newest {
+            return Ok(path);
+        }
+    }
+
+    anyhow::bail!(
+        "Android NDK not found. Set ANDROID_NDK_HOME to your NDK path (e.g. $HOME/android-ndk-r26c), \
+         or install an NDK under $ANDROID_SDK_ROOT/ndk."
+    )
+}
+
 fn check_android_setup() -> Result<()> {
-    if std::env::var("ANDROID_NDK_HOME").is_err() {
+    find_android_ndk().map(|_| ())
+}
+
+fn configure_android_linker(command: &mut Command, target: &str) -> Result<()> {
+    let ndk = find_android_ndk()?;
+    let host_tag = match std::env::consts::OS {
+        "linux" => "linux-x86_64",
+        "macos" => "darwin-x86_64",
+        "windows" => "windows-x86_64",
+        other => anyhow::bail!("Unsupported host OS for Android builds: {other}"),
+    };
+    let bin = ndk
+        .join("toolchains/llvm/prebuilt")
+        .join(host_tag)
+        .join("bin");
+
+    let (linker_name, linker_env, cc_env, ar_env) = match target {
+        "aarch64-linux-android" => (
+            "aarch64-linux-android29-clang",
+            "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER",
+            "CC_aarch64_linux_android",
+            "AR_aarch64_linux_android",
+        ),
+        "armv7-linux-androideabi" => (
+            "armv7a-linux-androideabi29-clang",
+            "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER",
+            "CC_armv7_linux_androideabi",
+            "AR_armv7_linux_androideabi",
+        ),
+        "x86_64-linux-android" => (
+            "x86_64-linux-android29-clang",
+            "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER",
+            "CC_x86_64_linux_android",
+            "AR_x86_64_linux_android",
+        ),
+        other => anyhow::bail!("Unsupported Android target: {other}"),
+    };
+
+    let mut linker = bin.join(linker_name);
+    if !linker.is_file() && cfg!(target_os = "windows") {
+        // The Windows NDK ships batch wrappers for the compiler drivers.
+        let wrapper = bin.join(format!("{linker_name}.cmd"));
+        if wrapper.is_file() {
+            linker = wrapper;
+        }
+    }
+    if !linker.is_file() {
         anyhow::bail!(
-            "ANDROID_NDK_HOME not set. Please set it to your NDK path (e.g., $HOME/android-ndk-r26c)"
+            "Android linker not found: {}. Check that ANDROID_NDK_HOME points to a complete NDK.",
+            linker.display()
         );
     }
+
+    let ar = bin.join(if cfg!(target_os = "windows") {
+        "llvm-ar.exe"
+    } else {
+        "llvm-ar"
+    });
+
+    command.env(linker_env, &linker);
+    command.env(cc_env, &linker);
+    command.env(ar_env, ar);
     Ok(())
 }
 
-fn copy_artifacts(target: TargetPlatform, release: bool, out_dir: &Path) -> Result<()> {
+fn copy_artifacts(
+    target: TargetPlatform,
+    release: bool,
+    out_dir: &Path,
+    project: &str,
+) -> Result<()> {
     let profile = if release { "release" } else { "debug" };
+    let library = project.replace('-', "_");
     fs::create_dir_all(out_dir)?;
 
     match target {
         TargetPlatform::Linux => {
-            let src = PathBuf::from(format!("target/{}/my_game", profile));
+            let src = PathBuf::from(format!("target/{profile}/{project}"));
             if src.exists() {
-                fs::copy(&src, out_dir.join("my_game"))?;
+                fs::copy(&src, out_dir.join(project))?;
             }
         }
         TargetPlatform::Windows => {
-            let src = PathBuf::from(format!(
-                "target/x86_64-pc-windows-gnu/{}/my_game.exe",
-                profile
-            ));
+            let src = if cfg!(target_os = "windows") {
+                PathBuf::from(format!("target/{profile}/{project}.exe"))
+            } else {
+                PathBuf::from(format!(
+                    "target/x86_64-pc-windows-gnu/{profile}/{project}.exe"
+                ))
+            };
             if src.exists() {
-                fs::copy(&src, out_dir.join("my_game.exe"))?;
+                fs::copy(&src, out_dir.join(format!("{project}.exe")))?;
             }
         }
         TargetPlatform::Android => {
@@ -441,10 +693,9 @@ fn copy_artifacts(target: TargetPlatform, release: bool, out_dir: &Path) -> Resu
                 ("arm64-v8a", "aarch64-linux-android"),
                 ("armeabi-v7a", "armv7-linux-androideabi"),
             ] {
-                let src =
-                    PathBuf::from(format!("target/{}/{}/libmy_game.so", rust_target, profile));
+                let src = PathBuf::from(format!("target/{rust_target}/{profile}/lib{library}.so"));
                 if src.exists() {
-                    let dst = out_dir.join(format!("libmy_game-{}.so", abi));
+                    let dst = out_dir.join(format!("lib{library}-{abi}.so"));
                     fs::copy(&src, &dst)?;
                 }
             }
@@ -461,20 +712,32 @@ fn cmd_run(target: TargetPlatform, release: bool, args: Vec<String>) -> Result<(
             "Cannot run Android target directly. Use `s3d apk` to build APK, then install on device."
         );
     }
+    if matches!(target, TargetPlatform::All) {
+        anyhow::bail!("`s3d run` needs one target: linux, windows or android.");
+    }
+    if matches!(target, TargetPlatform::Linux) && cfg!(target_os = "windows") {
+        anyhow::bail!("Linux builds are not available on a Windows host. Use `s3d run windows`.");
+    }
 
     let profile_args = if release { vec!["--release"] } else { vec![] };
     let target_arg = match target {
         TargetPlatform::Linux => "",
+        TargetPlatform::Windows if cfg!(target_os = "windows") => "",
         TargetPlatform::Windows => "x86_64-pc-windows-gnu",
         _ => "",
     };
 
-    let mut cargo_args: Vec<String> = vec!["run".into(), "--locked".into()];
+    let mut cargo_args: Vec<String> = vec!["run".into()];
     cargo_args.extend(profile_args.iter().map(|s| s.to_string()));
     if !target_arg.is_empty() {
         cargo_args.extend(["--target".into(), target_arg.into()]);
+        // MinGW cross-builds use OpenGL only.
+        cargo_args.extend([
+            "--no-default-features".into(),
+            "--features".into(),
+            "opengl".into(),
+        ]);
     }
-    cargo_args.extend(["--features".into(), "vulkan,opengl".into()]);
     cargo_args.extend(args);
 
     let status = Command::new("cargo")
@@ -496,8 +759,6 @@ fn cmd_apk(abi: Abi, release: bool, sign: bool) -> Result<()> {
         abi
     );
 
-    check_android_setup()?;
-
     let abi_str = match abi {
         Abi::Arm64V8a => "arm64-v8a",
         Abi::ArmeabiV7a => "armeabi-v7a",
@@ -512,13 +773,22 @@ fn cmd_apk(abi: Abi, release: bool, sign: bool) -> Result<()> {
         );
     }
 
-    let mut cmd = Command::new("./build_apk.sh");
+    // On Windows the script must be started through bash (Git Bash / MSYS).
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut command = Command::new("bash");
+        command.arg("build_apk.sh");
+        command
+    } else {
+        Command::new("./build_apk.sh")
+    };
     cmd.arg(abi_str);
     if release {
         cmd.arg("--release");
     }
 
-    let status = cmd.status().context("Failed to run build_apk.sh")?;
+    let status = cmd
+        .status()
+        .context("Failed to run build_apk.sh (on Windows, run it from Git Bash or install bash)")?;
 
     if !status.success() {
         anyhow::bail!("APK build failed");
@@ -542,9 +812,11 @@ fn cmd_apk(abi: Abi, release: bool, sign: bool) -> Result<()> {
 }
 
 fn cmd_export(platforms: String, out_dir: PathBuf) -> Result<()> {
+    let project = read_project_name()?;
     println!(
-        "{} Exporting to {:?}...",
+        "{} Exporting {} to {:?}...",
         style("→").green().bold(),
+        project,
         out_dir
     );
 
@@ -561,7 +833,7 @@ fn cmd_export(platforms: String, out_dir: PathBuf) -> Result<()> {
             }
         };
 
-        build_for_target(target, true, "vulkan,opengl", Some(&out_dir))?;
+        build_for_target(target, true, "vulkan,opengl", Some(&out_dir), &project)?;
     }
 
     println!(
@@ -583,14 +855,14 @@ fn cmd_info() -> Result<()> {
     println!("  • Windows x86_64 GNU (OpenGL only)");
     println!("  • Android arm64-v8a (OpenGL ES 3.0)");
     println!("  • Android armeabi-v7a (OpenGL ES 3.0)");
+    println!("  • Android x86_64 (OpenGL ES 3.0, emulator)");
     println!();
     println!("{}", style("Features:").bold());
-    println!("  • Deferred rendering with HDR, SSAO, Bloom");
-    println!("  • Physically-based rendering (PBR)");
-    println!("  • Dynamic shadows (cascaded shadow maps)");
-    println!("  • In-game console with command system");
-    println!("  • Hot-reloadable shaders");
-    println!("  • Cross-platform input abstraction");
+    println!("  • Forward PBR rendering with HDR, SSAO and bloom");
+    println!("  • Orthographic shadow map with PCF filtering");
+    println!("  • Vulkan 1.2 and OpenGL 3.3 / ES 3.0 backends");
+    println!("  • Named cameras with an in-game console and command system");
+    println!("  • Immediate-mode UI and bitmap text");
     println!();
     println!("{}", style("Environment Variables:").bold());
     for (k, v) in [
@@ -598,9 +870,9 @@ fn cmd_info() -> Result<()> {
         ("SOLDATIK3D_VSYNC", "on|off|adaptive|mailbox"),
         ("SOLDATIK3D_MAX_FRAMES", "<number>"),
         ("SOLDATIK3D_COMMANDS", "\"cmd1;cmd2\""),
-        ("SOLDATIK3D_CONSOLE", "1"),
-        ("SOLDATIK3D_DEBUG_VIEW", "normals|depth|wireframe"),
-        ("SOLDATIK3D_VALIDATION", "1"),
+        ("SOLDATIK3D_CONSOLE", "1|true|yes|on"),
+        ("SOLDATIK3D_DEBUG_VIEW", "lit|normals|depth"),
+        ("SOLDATIK3D_VALIDATION", "1|true|yes|on"),
     ] {
         println!("  {} = {}", style(k).cyan(), v);
     }
@@ -663,13 +935,13 @@ fn cmd_check(target: Option<TargetPlatform>) -> Result<()> {
     }
 
     // Check platform-specific setup
-    if target.is_none() || matches!(target, Some(TargetPlatform::Android)) {
-        if std::env::var("ANDROID_NDK_HOME").is_err() {
-            println!(
-                "{} ANDROID_NDK_HOME not set (required for Android builds)",
-                style("!").yellow().bold()
-            );
-        }
+    if (target.is_none() || matches!(target, Some(TargetPlatform::Android)))
+        && std::env::var("ANDROID_NDK_HOME").is_err()
+    {
+        println!(
+            "{} ANDROID_NDK_HOME not set (required for Android builds)",
+            style("!").yellow().bold()
+        );
     }
 
     println!("{} Project validation complete", style("✓").green().bold());

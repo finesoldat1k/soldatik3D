@@ -1,457 +1,255 @@
-# soldatik3d CLI Reference
+# `s3d` CLI Reference
 
-Complete reference for the `soldatik3d` command-line tool.
-
-## Installation
+`s3d` is the Soldatik3D development tool. It creates projects, invokes Cargo for
+cross-target builds, packages APKs and copies artifacts. It is a host tool and
+is not a dependency of games.
 
 ```bash
-# From crates.io (when published)
-cargo install soldatik3d-cli
-
-# From source
-git clone https://github.com/finesoldat1k/soldatik3D
-cd soldatik3D
-cargo install --path tools/soldatik3d-cli
+cargo build --release -p s3d
+./target/release/s3d --help
 ```
 
-## Global Options
+Global option:
 
-```bash
-soldatik3d [OPTIONS] <COMMAND>
+| Option | Effect |
+|--------|--------|
+| `-v`, `--verbose` | Verbose output on commands that support it |
 
-Options:
-  -v, --verbose    Verbose output
-  -h, --help       Print help
-  -V, --version    Print version
-```
+Commands must run in the right directory:
 
-## Commands
+| Command | Working directory |
+|---------|-------------------|
+| `new` | Any |
+| `build`, `run`, `apk`, `export`, `check` | Generated game project root (must contain `Cargo.toml`) |
+| `info`, `engine` | Any |
 
-### `new` - Create New Project
+## `s3d new`
 
-```bash
-soldatik3d new <NAME> [OPTIONS]
+```text
+Usage: s3d new [OPTIONS] <NAME>
 
 Arguments:
-  <NAME>    Project name (directory name)
+  <NAME>  Project name (directory name)
 
 Options:
-  -d, --dir <PATH>        Target directory [default: .]
-  -t, --template <PATH>   Custom template path
-  --git / --no-git        Initialize git repository [default: true]
+  -d, --dir <DIR>            Target directory (default: current directory)
+  -t, --template <TEMPLATE>  Template path (default: built-in templates/game)
 ```
 
-**Examples:**
-```bash
-# Create in current directory
-soldatik3d new my_game
+What it does:
 
-# Create in specific directory
-soldatik3d new my_game --dir ~/projects
+1. Normalizes the name to a snake_case Cargo package (`My-Game` → `my_game`)
+   and a PascalCase Rust type (`MyGame`).
+2. Creates the target directory plus `src/`, `assets/`, `shaders/` and
+   `.cargo/`.
+3. Copies `templates/game` (or `--template`) with `my_game` and `MyGame`
+   replaced throughout text files.
+4. Rewrites the template's `runtime` path dependency so it points at the engine
+   checkout that created the project (`SOLDATIK3D_ENGINE` overrides this).
+5. Runs `git init`, `git add -A` and an initial commit.
 
-# Use custom template
-soldatik3d new my_game --template /path/to/custom/template
-```
+Template lookup order:
 
-**Created Structure:**
-```
-my_game/
-├── .cargo/config.toml
-├── assets/
-├── build.rs
-├── Cargo.toml
-├── src/lib.rs
-├── shaders/
-├── build_apk.sh
-└── README.md
-```
+1. `--template <path>`
+2. `$CARGO_MANIFEST_DIR/../../templates/game`
+3. `/usr/share/s3d/templates/game`
+4. `$XDG_DATA_HOME/s3d/templates/game`
+5. `../templates/game` and `../../templates/game` relative to the executable
 
----
-
-### `build` - Build Project
+If no candidate contains `Cargo.toml`, the command fails with
+`Template directory not found`.
 
 ```bash
-soldatik3d build [OPTIONS]
-
-Options:
-  --target <TARGET>       Target platform [default: linux]
-                          [linux, windows, android, all]
-  -r, --release           Build in release mode
-  -f, --features <FEATS>  Features to enable [default: vulkan,opengl]
-  -o, --out-dir <PATH>    Output directory
+s3d new my_game
+s3d new "My Game" --dir ~/projects
+s3d new custom --template /path/to/template
 ```
 
-**Targets:**
-| Target | Platform | Backend |
-|--------|----------|---------|
-| `linux` | Linux x86_64 | Vulkan + OpenGL |
-| `windows` | Windows MinGW | OpenGL only |
-| `android` | Android ARM64/ARMv7 | OpenGL ES |
-| `all` | All platforms | Platform-appropriate |
+The generated project is standalone: it has its own `[workspace]` table so it
+can live inside or outside the engine repository.
 
-**Examples:**
-```bash
-# Debug build for current platform
-soldatik3d build
+## `s3d build`
 
-# Release build for Linux
-soldatik3d build --target linux --release
-
-# Cross-compile Windows from Linux
-soldatik3d build --target windows --release
-
-# Build Android libraries
-soldatik3d build --target android --release
-
-# Build all platforms
-soldatik3d build --target all --release
-
-# Custom features
-soldatik3d build --features opengl --release
-```
-
-**Environment Variables (Android):**
-```bash
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-soldatik3d build --target android --release
-```
-
----
-
-### `run` - Run Game
-
-```bash
-soldatik3d run [OPTIONS]
-
-Options:
-  --target <TARGET>   Target platform [default: linux]
-  -r, --release       Run release build
-  -- <ARGS>...        Additional cargo arguments
-```
-
-**Note:** Android target not supported (use `apk` command).
-
-**Examples:**
-```bash
-# Run debug build
-soldatik3d run
-
-# Run release build
-soldatik3d run --release
-
-# Run with OpenGL backend
-SOLDATIK3D_BACKEND=opengl soldatik3d run
-
-# Run with custom args
-soldatik3d run -- --features vulkan
-```
-
----
-
-### `apk` - Build Android APK
-
-```bash
-soldatik3d apk <ABI> [OPTIONS]
+```text
+Usage: s3d build [OPTIONS] [TARGET]
 
 Arguments:
-  <ABI>    Target ABI [arm64-v8a, armeabi-v7a, x86_64]
+  [TARGET]  linux | windows | android | all   [default: linux]
 
 Options:
-  -r, --release    Build release APK
-  --sign           Sign APK (requires keystore config)
+  -r, --release              Build in release mode
+  -f, --features <FEATURES>  Cargo features        [default: vulkan,opengl]
+  -o, --out-dir <OUT_DIR>    Copy the artifact here
 ```
 
-**Prerequisites:**
-- Android NDK (`ANDROID_NDK_HOME`)
-- Android SDK (`ANDROID_SDK_ROOT` or `ANDROID_HOME`)
-- Gradle 8.4+
+Behavior by target:
 
-**Examples:**
-```bash
-# Debug APK for ARM64
-soldatik3d apk arm64-v8a
+| Target | Cargo target | Features used | Artifact |
+|--------|--------------|---------------|----------|
+| `linux` | host (Linux only) | `--features` value | `target/<profile>/<package>` |
+| `windows` | host on Windows; `x86_64-pc-windows-gnu` on Linux | host features on Windows; `opengl` (forced) on Linux | `target/<profile>/<package>.exe` or `target/x86_64-pc-windows-gnu/<profile>/<package>.exe` |
+| `android` | `aarch64-linux-android` + `armv7-linux-androideabi` | `opengl` (forced) | `target/<triple>/<profile>/lib<package>.so` |
+| `all` | Linux + Windows + Android on Linux; Windows + Android on Windows | as above | all locally buildable artifacts |
 
-# Release APK for ARMv7
-soldatik3d apk armeabi-v7a --release
+On Linux, Windows builds first check for `x86_64-w64-mingw32-gcc` and fail with
+an install hint if MinGW is missing. On Windows, the native MSVC target is used
+and both backends are available. Linux builds are rejected on a Windows host.
+Android builds require an NDK via `ANDROID_NDK_HOME` or
+`$ANDROID_SDK_ROOT/ndk`.
 
-# Build both ABIs
-soldatik3d apk arm64-v8a --release
-soldatik3d apk armeabi-v7a --release
-```
+With `--out-dir`, artifacts are copied as:
 
-**Output:**
-```
-apk/app-arm64-v8a-debug.apk
-apk/app-armeabi-v7a-release.apk
-```
-
-**Install on Device:**
-```bash
-adb install -r apk/app-arm64-v8a-release.apk
-```
-
----
-
-### `export` - Export Distributable Packages
+| File | Target |
+|------|--------|
+| `<package>` | Linux |
+| `<package>.exe` | Windows |
+| `lib<package>-arm64-v8a.so` | Android arm64 |
+| `lib<package>-armeabi-v7a.so` | Android armv7 |
 
 ```bash
-soldatik3d export [OPTIONS]
+s3d build
+s3d build linux --release
+s3d build windows --release --out-dir dist
+s3d build android --release
+s3d build all --release --out-dir dist
+s3d build linux --features opengl
+```
+
+`build` produces libraries/binaries, not APKs. Use `s3d apk` for Android
+installables.
+
+## `s3d run`
+
+```text
+Usage: s3d run [OPTIONS] [TARGET] [-- <ARGS>...]
+
+Arguments:
+  [TARGET]  linux | windows | android   [default: linux]
 
 Options:
-  -p, --platforms <LIST>  Platforms to export [default: linux,windows,android]
-                          Comma-separated: linux,windows,android
-  -o, --out-dir <PATH>    Output directory [default: dist]
+  -r, --release       Run a release build
+  --                  Additional cargo arguments, passed through
+
+Arguments after `--` go to `cargo run`; Cargo itself does not forward them to
+the game unless they come after Cargo's own `--`.
 ```
 
-**Examples:**
-```bash
-# Export all platforms
-soldatik3d export
-
-# Export specific platforms
-soldatik3d export --platforms linux,android
-
-# Custom output directory
-soldatik3d export --out-dir ./releases/v1.0.0
-```
-
-**Output Structure:**
-```
-dist/
-├── my_game-linux-x86_64.tar.gz
-├── my_game-windows-x86_64.zip
-├── my_game-android-arm64-v8a.apk
-└── my_game-android-armeabi-v7a.apk
-```
-
----
-
-### `info` - Show Engine Info
+Examples:
 
 ```bash
-soldatik3d info
-
-Output:
-Soldatik3D Engine
-Version: 0.1.0
-Edition: 2024
-
-Supported Platforms:
-  • Linux x86_64 (Vulkan + OpenGL)
-  • Windows x86_64 MSVC (Vulkan + OpenGL)
-  • Windows x86_64 GNU (OpenGL only)
-  • Android arm64-v8a (OpenGL ES 3.0)
-  • Android armeabi-v7a (OpenGL ES 3.0)
-
-Features:
-  • Deferred rendering with HDR, SSAO, Bloom
-  • Physically-based rendering (PBR)
-  • Dynamic shadows (cascaded shadow maps)
-  • In-game console with command system
-  • Hot-reloadable shaders
-  • Cross-platform input abstraction
-
-Environment Variables:
-  SOLDATIK3D_BACKEND=vulkan|opengl
-  SOLDATIK3D_VSYNC=on|off|adaptive|mailbox
-  SOLDATIK3D_MAX_FRAMES=<number>
-  SOLDATIK3D_COMMANDS="cmd1;cmd2"
-  SOLDATIK3D_CONSOLE=1
-  SOLDATIK3D_DEBUG_VIEW=normals|depth|wireframe
-  SOLDATIK3D_VALIDATION=1
+s3d run
+s3d run --release
+s3d run linux -- --release
 ```
 
----
+`android` is rejected: use `s3d apk` and install on a device. Running
+`windows` from Linux uses the MinGW target and requires Wine to execute.
 
-### `engine` - Engine Management
+## `s3d apk`
 
-```bash
-soldatik3d engine <ACTION>
+```text
+Usage: s3d apk [OPTIONS] [ABI]
 
-Actions:
-  version     Show engine version and path
-  update      Update to latest version
-  link <PATH> Link local engine for development
-```
-
-**Examples:**
-```bash
-# Show version
-soldatik3d engine version
-
-# Link local engine (for development)
-soldatik3d engine link /path/to/soldatik3D
-
-# Update engine
-soldatik3d engine update
-```
-
----
-
-### `check` - Validate Project
-
-```bash
-soldatik3d check [OPTIONS]
+Arguments:
+  [ABI]  arm64-v8a | armeabi-v7a | x86_64   [default: arm64-v8a]
 
 Options:
-  --target <TARGET>  Check specific platform [linux, windows, android]
+  -r, --release  Build a release APK
+      --sign     Accepted, but signing is configured through environment variables
 ```
 
-**Checks:**
-- Cargo.toml has correct `crate-type = ["cdylib", "rlib"]`
-- `build.rs` exists
-- `.cargo/config.toml` exists
-- Android NDK configured (if targeting Android)
-- Vulkan/OpenGL dependencies available
-
-**Examples:**
-```bash
-# Check all platforms
-soldatik3d check
-
-# Check Android setup
-soldatik3d check --target android
-```
-
----
-
-## Configuration Files
-
-### Project `Cargo.toml`
-
-```toml
-[package]
-name = "my_game"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0"
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = ["vulkan", "opengl"]
-vulkan = ["soldatik3d/vulkan"]
-opengl = ["soldatik3d/opengl"]
-
-[dependencies]
-soldatik3d = { path = "../../../.." }  # Or version from crates.io
-anyhow = "1.0"
-```
-
-### `.cargo/config.toml`
-
-```toml
-# Cross-compilation settings
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-gcc-ar"
-runner = "wine64"
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "link-arg=-static"]
-
-# Android (set via build.rs / env)
-# [target.aarch64-linux-android]
-# linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-```
-
-### `build.rs`
-
-```rust
-fn main() {
-    // Auto-configures Android NDK linker
-    // Copies assets/ to target directory
-    // Prints build info
-}
-```
-
----
-
-## Environment Variables
-
-| Variable | Values | Description |
-|----------|--------|-------------|
-| `SOLDATIK3D_BACKEND` | `vulkan`, `opengl` | Force graphics backend |
-| `SOLDATIK3D_VSYNC` | `on`, `off`, `adaptive`, `mailbox` | VSync mode |
-| `SOLDATIK3D_MAX_FRAMES` | `<number>` | Auto-exit after N frames |
-| `SOLDATIK3D_COMMANDS` | `"cmd1;cmd2"` | Run commands at startup |
-| `SOLDATIK3D_CONSOLE` | `1` | Open console at startup |
-| `SOLDATIK3D_DEBUG_VIEW` | `normals`, `depth`, `wireframe` | Initial debug view |
-| `SOLDATIK3D_VALIDATION` | `1` | Enable Vulkan validation |
-| `ANDROID_NDK_HOME` | `<path>` | Android NDK path |
-| `ANDROID_SDK_ROOT` | `<path>` | Android SDK path |
-| `SHADERC_LIB_DIR` | `<path>` | System shaderc library |
-| `CMAKE_POLICY_VERSION_MINIMUM` | `3.5` | CMake compatibility |
-
----
-
-## Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Invalid arguments |
-| 3 | Project not found |
-| 4 | Build failed |
-| 5 | Missing dependencies |
-| 6 | Android NDK not found |
-| 7 | Gradle build failed |
-
----
-
-## Shell Completion
+Runs `./build_apk.sh <abi> [--release]` from the project root. The script must
+exist; `s3d new` provides one.
 
 ```bash
-# Bash
-soldatik3d --completion bash > /etc/bash_completion.d/soldatik3d
-
-# Zsh
-soldatik3d --completion zsh > ~/.zsh/completions/_soldatik3d
-
-# Fish
-soldatik3d --completion fish > ~/.config/fish/completions/soldatik3d.fish
+s3d apk
+s3d apk arm64-v8a
+s3d apk armeabi-v7a --release
+s3d apk x86_64
 ```
 
----
+Output: `apk/app-<abi>-<debug|release>.apk`. Release signing is controlled by
+`SOLDATIK3D_KEYSTORE*` variables inside Gradle; `--sign` currently only prints
+a notice.
 
-## Troubleshooting
+## `s3d export`
 
-### `command not found: soldatik3d`
+```text
+Usage: s3d export [OPTIONS]
+
+Options:
+  -p, --platforms <PLATFORMS>  Comma-separated: linux,windows,android
+                               [default: linux,windows,android]
+  -o, --out-dir <OUT_DIR>      Output directory [default: dist]
+```
+
+Builds every listed platform in **release mode** and copies the artifacts
+directly into the output directory. No archives and no APKs are created.
 
 ```bash
-# Add cargo bin to PATH
-export PATH="$HOME/.cargo/bin:$PATH"
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+s3d export
+s3d export --platforms linux,windows --out-dir dist
 ```
 
-### `Android NDK not found`
+Windows export requires MinGW on Linux; on a Windows host it uses MSVC. Android
+export requires the NDK. Unknown platform names are reported and skipped.
+Because Linux cross-compilation is not available on Windows, use
+`s3d export --platforms windows,android` there.
+
+## `s3d info`
+
+Prints the engine version, supported platforms, renderer features and
+environment variables. Takes no options.
+
+## `s3d engine`
+
+```text
+Usage: s3d engine <COMMAND>
+
+Commands:
+  version  Show engine version and path
+  update   Update engine to latest version
+  link     Link local engine for development
+```
+
+| Subcommand | Current behavior |
+|------------|------------------|
+| `version` | Prints `s3d 0.1.0` and the compile-time engine path |
+| `update` | Prints that updating is not implemented |
+| `link <path>` | Prints the path; no files are modified |
+
+## `s3d check`
+
+```text
+Usage: s3d check [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  linux | windows | android | all
+```
+
+Checks that the current directory looks like a generated project:
+
+- `Cargo.toml` exists (hard error otherwise),
+- warns if `[lib] crate-type` does not include `cdylib`,
+- warns if `build.rs` is missing,
+- warns if `.cargo/config.toml` is missing,
+- warns if Android is being checked and `ANDROID_NDK_HOME` is unset.
+
+It does not compile anything.
 
 ```bash
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-# Verify
-ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
+s3d check
+s3d check android
 ```
 
-### `MinGW not found`
+## Exit behavior
 
-```bash
-# Ubuntu/Debian
-sudo apt-get install mingw-w64
+All commands return a non-zero exit code on failure. Errors are printed to
+stderr. `s3d build all` and `s3d export` stop at the first failing platform.
 
-# Verify
-x86_64-w64-mingw32-gcc --version
-```
+## Related
 
-### `Gradle not found`
-
-```bash
-# Install Gradle
-sudo apt-get install gradle
-# Or use included gradlew
-chmod +x gradlew
-./gradlew assembleRelease
-```
-
----
-
-*See [Getting Started](getting-started/quick-start.md) for quick start guide, or [Platform Guides](guides/) for platform-specific details.*
+- [Console commands](cli-commands.md)
+- [Configuration](configuration.md)
+- [Cross-compilation](../guides/cross-compilation.md)
+- [Android](../guides/android.md)

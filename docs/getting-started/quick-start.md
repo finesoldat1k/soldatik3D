@@ -1,160 +1,136 @@
-# Quick Start - Your First Game in 5 Minutes
+# Quick Start
 
-This guide will get you from zero to a running 3D game in under 5 minutes.
-
-## Prerequisites
-
-- **Rust stable** (2024 edition): `rustup default stable`
-- **Linux**: `sudo apt-get install build-essential pkg-config cmake libvulkan-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev`
-- **Windows**: Visual Studio Build Tools with C++, Vulkan SDK
-- **Android**: NDK r26c+, `rustup target add aarch64-linux-android armv7-linux-androideabi`
-
-## Install the CLI Tool
+## 1. Build and run the demo
 
 ```bash
-# From crates.io (when published)
-cargo install soldatik3d-cli
-
-# Or build from source
 git clone https://github.com/finesoldat1k/soldatik3D
 cd soldatik3D
-cargo install --path tools/soldatik3d-cli
+
+cargo run -p demo
 ```
 
-## Create Your First Project
+The demo opens a 1280×720 window and uses Vulkan by default on desktop. If
+Vulkan is not available, select OpenGL:
 
 ```bash
-# Create a new game project
-soldatik3d new my_awesome_game
-cd my_awesome_game
+SOLDATIK3D_BACKEND=opengl cargo run -p demo
+```
 
-# Run it immediately!
+Useful smoke-test mode (renders two frames and exits):
+
+```bash
+SOLDATIK3D_BACKEND=opengl SOLDATIK3D_MAX_FRAMES=2 cargo run -p demo
+```
+
+Demo controls are listed in the [README](../../README.md#demo-controls).
+
+## 2. Build the s3d CLI
+
+```bash
+cargo build --release -p s3d
+./target/release/s3d --help
+```
+
+`s3d` is a host tool. It is not needed to build the engine itself, but it
+creates and packages game projects. The examples below assume
+`target/release` is on `PATH`; otherwise prefix commands with
+`./target/release/` or run `cargo install --path crates/s3d`.
+
+## 3. Create a game project
+
+```bash
+./target/release/s3d new my_game
+cd my_game
 cargo run
 ```
 
-You should see a window with a 3D scene, a rotating camera, and colored lights. Press `F1-F4` for debug views, `F12` for screenshots, `~` for console.
+`s3d new` copies `templates/game`, renames the Rust package, points the
+`runtime` dependency at the engine checkout that created the project, and makes
+an initial git commit.
 
-## Project Structure
+Generated project layout:
 
-```
-my_awesome_game/
-├── .cargo/config.toml      # Cross-compilation settings
-├── assets/                 # Your textures, models, shaders
-├── build.rs                # Build script (asset copying, Android setup)
-├── Cargo.toml              # Project manifest
+```text
+my_game/
+├── android/gradle/     # NativeActivity Gradle project
+├── assets/             # Assets copied into the APK by build.rs
+├── shaders/            # Your shaders
 ├── src/
-│   └── lib.rs              # Game entry point
-├── shaders/                # Custom GLSL shaders
-├── build_apk.sh            # Android APK builder
-└── README.md               # This file
+│   ├── lib.rs          # Game implementation + Android entry point
+│   └── main.rs         # Desktop entry point
+├── build.rs            # Android asset packaging
+├── build_apk.sh        # Local APK builder
+├── Cargo.toml
+└── README.md
 ```
 
-## The Game Code
+## 4. Build and run
 
-Open `src/lib.rs` - this is where your game lives:
+```bash
+# Debug desktop build
+cargo run
+
+# Release desktop build
+s3d build linux --release
+
+# Windows cross build (MinGW, OpenGL only)
+s3d build windows --release
+
+# Android APK
+s3d apk arm64-v8a --release
+```
+
+`s3d build` and `s3d apk` must run from the generated project root.
+
+## 5. Choose a graphics backend
+
+```bash
+SOLDATIK3D_BACKEND=vulkan cargo run
+SOLDATIK3D_BACKEND=opengl cargo run
+```
+
+Or in code:
 
 ```rust
-use soldatik3d::{run, Game, GameConfig, UpdateContext, World};
+use runtime::{BackendKind, GameConfig};
 
-struct MyGame;
-
-impl Game for MyGame {
-    fn config(&self) -> GameConfig {
-        GameConfig::default()
-            .with_title("My Awesome Game")
-            .with_window_size(1280, 720)
-    }
-
-    fn create_world(&mut self) -> World {
-        let mut world = World::default();
-        // Add cameras, lights, entities here
-        world
-    }
-
-    fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Called every frame - your game logic goes here
-    }
-}
-
-fn main() -> anyhow::Result<()> {
-    run(MyGame)
-}
+let config = GameConfig::default().with_backend(BackendKind::OpenGl);
 ```
 
-## Run with Different Backends
+Desktop builds enable both backends by default. Android builds enable OpenGL ES
+only; the Vulkan dependency is target-gated out.
+
+## 6. Build an APK
 
 ```bash
-# Vulkan (default, best performance)
-cargo run
-
-# OpenGL (fallback, wider compatibility)
-SOLDATIK3D_BACKEND=opengl cargo run
-
-# Disable VSync for benchmarking
-SOLDATIK3D_VSYNC=off cargo run --release
-```
-
-## Build for Release
-
-```bash
-# Optimized build
-soldatik3d build --release
-
-# Or manually
-cargo build --release
-```
-
-The binary will be at `target/release/my_awesome_game`.
-
-## Build for Android
-
-```bash
-# Set up NDK
 export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
 
-# Build native libraries
-soldatik3d build --target android
-
-# Build APK
-soldatik3d apk arm64-v8a --release
-
-# Install on device
-adb install -r apk/app-arm64-v8a-release.apk
+./build_apk.sh arm64-v8a
+./build_apk.sh arm64-v8a --release
 ```
 
-## Build for Windows (from Linux)
+The APK is written to `apk/app-<abi>-<debug|release>.apk`. Install it with:
 
 ```bash
-# Install MinGW
-sudo apt-get install mingw-w64
-
-# Cross-compile
-soldatik3d build --target windows --release
+adb install -r apk/app-arm64-v8a-debug.apk
 ```
 
-## Next Steps
+Release APKs are debug-signed unless `SOLDATIK3D_KEYSTORE*` variables are set.
+See the [Android guide](../guides/android.md) for details.
 
-1. **Read [Your First Game](first-game.md)** - Build a complete small game
-2. **Learn [Game Loop](guides/game-loop.md)** - Understand update/render cycle
-3. **Explore [API Reference](api/runtime.md)** - Full API documentation
-4. **Check [Examples](examples/basic.md)** - See more complex games
+## 7. Run the checks
 
-## Common Issues
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features
+cargo test --workspace --all-features
+cargo doc --workspace --no-deps --all-features
+```
 
-| Issue | Solution |
-|-------|----------|
-| `linker not found` | Install `clang` (Linux) or Visual Studio (Windows) |
-| `Vulkan not found` | Install `libvulkan-dev` / Vulkan SDK |
-| `Android build fails` | Check `ANDROID_NDK_HOME`, run `rustup target add ...` |
-| `Shader compilation error` | Set `SOLDATIK3D_VALIDATION=1` for details |
+## Next steps
 
-## Get Help
-
-- **Console**: Press `~` in-game for live commands
-- **Docs**: `soldatik3d info` shows engine capabilities
-- **Validate**: `soldatik3d check` validates your project setup
-- **GitHub**: [Issues](https://github.com/finesoldat1k/soldatik3D/issues) / [Discussions](https://github.com/finesoldat1k/soldatik3D/discussions)
-
----
-
-*You're now ready to build amazing 3D games with Soldatik3D! 🎮*
+- [Your first game](first-game.md) — write a complete game from scratch.
+- [Game loop](../guides/game-loop.md) — understand `Game` and `UpdateContext`.
+- [Scene API](../api/scene.md) — meshes, cameras, lights and materials.
+- [Android guide](../guides/android.md) — APK packaging and signing.

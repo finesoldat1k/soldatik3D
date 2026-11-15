@@ -1,600 +1,224 @@
 # Android Development
 
-Complete guide for building and deploying Soldatik3D games on Android.
+Soldatik3D games are packaged as a native-activity Android app. There is no
+Java or Kotlin gameplay code: the Rust crate is compiled as a `cdylib`, Gradle
+packages it into the APK, and `android.app.NativeActivity` loads it and calls
+the exported `android_main` function.
 
-## Architecture Overview
-
-Soldatik3D uses **NativeActivity** for Android:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Android App (APK)                         │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ android.app.NativeActivity                            │  │
-│  │   • No Java/Kotlin code required                      │  │
-│  │   • Loads libyour_game.so via JNI                     │  │
-│  │   • Calls android_main(app: AndroidApp)               │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                           │                                  │
-│                           ▼                                  │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ libyour_game.so (cdylib)                              │  │
-│  │   • Rust game code compiled for ARM64/ARMv7           │  │
-│  │   • Exports #[unsafe(no_mangle)] fn android_main()    │  │
-│  │   • Uses android-activity crate for JNI bridge        │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+Android builds use **OpenGL ES 3.0 only**. The Vulkan backend and its
+dependencies are target-gated out by `cfg(not(target_os = "android"))`, so the
+`vulkan` Cargo feature is not compiled for Android targets.
 
 ## Requirements
 
-### Host Machine (Linux recommended)
-- Android NDK r26c+ (r27+ recommended)
-- Android SDK (for APK building)
-- Rust with Android targets
-- Gradle 8.4+ (for APK building)
+| Component | Version |
+|-----------|---------|
+| JDK | 17 |
+| Android SDK platform | 34 |
+| Android build-tools | 34.0.0 |
+| Android NDK | r26c or newer |
+| Gradle | 8.10.2 (downloaded by the wrapper) |
+| Android Gradle Plugin | 8.7.3 |
+| `minSdk` / `targetSdk` | 29 / 34 |
 
-### Target Device
-- Android API 29+ (Android 10+)
-- OpenGL ES 3.0+ GPU
-- ARM64 (arm64-v8a) or ARMv7 (armeabi-v7a)
-
-## Setup
-
-### 1. Install NDK
-
-```bash
-# Option 1: Android Studio (recommended)
-# SDK Manager → NDK → Install r26c+
-
-# Option 2: Command line
-cd ~
-wget https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
-unzip android-ndk-r26c-linux.zip
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-echo 'export ANDROID_NDK_HOME=$HOME/android-ndk-r26c' >> ~/.bashrc
-source ~/.bashrc
-```
-
-### 2. Install Android SDK (for APK)
-
-```bash
-# Via Android Studio (easiest)
-# 1. Install Android Studio
-# 2. SDK Manager → Platforms → Android 34 (API 34)
-# 3. SDK Tools → Build Tools 34.0.0, Platform Tools
-# 4. Set ANDROID_SDK_ROOT or ANDROID_HOME
-
-# Or command line
-cd ~
-wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-unzip commandlinetools-linux-*.zip -d android-sdk
-export ANDROID_SDK_ROOT=$HOME/android-sdk
-$HOME/android-sdk/cmdline-tools/bin/sdkmanager --licenses
-$HOME/android-sdk/cmdline-tools/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-```
-
-### 3. Add Rust Targets
+Install the Rust targets for the ABIs you need:
 
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 ```
 
-### 4. Verify Setup
+| APK ABI | Rust target | NDK linker |
+|---------|-------------|------------|
+| `arm64-v8a` | `aarch64-linux-android` | `aarch64-linux-android29-clang` |
+| `armeabi-v7a` | `armv7-linux-androideabi` | `armv7a-linux-androideabi29-clang` |
+| `x86_64` | `x86_64-linux-android` | `x86_64-linux-android29-clang` |
+
+`x86_64` is intended for emulators. Most devices use `arm64-v8a`.
+
+Install SDK components:
 
 ```bash
-# Check NDK
-ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-
-# Check SDK
-$ANDROID_SDK_ROOT/platform-tools/adb version
-
-# Test compile
-cd /path/to/soldatik3D
-ANDROID_NDK_HOME=$ANDROID_NDK_HOME cargo build --target aarch64-linux-android -p demo
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
+"$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+  "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 ```
 
-## Building Native Libraries
+## Environment variables
 
-### Debug Build
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `JAVA_HOME` | yes | JDK 17 used by Gradle |
+| `ANDROID_SDK_ROOT` or `ANDROID_HOME` | yes | SDK location; also written to `local.properties` |
+| `ANDROID_NDK_HOME` | recommended | NDK root. If unset, the build scripts look for the newest NDK under `$ANDROID_SDK_ROOT/ndk` |
+| `GRADLE_USER_HOME` | optional | Gradle cache location |
+| `SOLDATIK3D_ANDROID_LIB_NAME` | set by script | Native library name without the `lib` prefix and `.so` suffix |
+| `SOLDATIK3D_ANDROID_APP_ID` | set by script | Android application ID |
+| `SOLDATIK3D_ANDROID_APP_NAME` | set by script | Display name (`app_name` string resource) |
+| `SOLDATIK3D_KEYSTORE` | optional | Path to a release keystore |
+| `SOLDATIK3D_KEYSTORE_PASSWORD` | optional | Keystore password |
+| `SOLDATIK3D_KEY_ALIAS` | optional | Key alias |
+| `SOLDATIK3D_KEY_PASSWORD` | optional | Key password |
 
-```bash
-# ARM64 (most devices)
-cargo build --target aarch64-linux-android \
-  --no-default-features --features opengl
+The `SOLDATIK3D_ANDROID_*` values are normally exported by `build_apk.sh`.
+They exist so the same Gradle project can package the engine demo and any
+generated game.
 
-# ARMv7 (older devices)
-cargo build --target armv7-linux-androideabi \
-  --no-default-features --features opengl
+## Gradle projects
 
-# Output:
-# target/aarch64-linux-android/debug/libyour_game.so
-# target/armv7-linux-androideabi/debug/libyour_game.so
-```
+There are two identical copies of the Gradle project:
 
-### Release Build
+- `scripts/apk/gradle` — canonical project used by `scripts/apk/build_apk.sh`
+  and the CI workflow.
+- `templates/game/android/gradle` — copied into every project created by
+  `s3d new`.
 
-```bash
-# ARM64
-cargo build --target aarch64-linux-android --release \
-  --no-default-features --features opengl
+If you change the manifest, resources, wrapper or Gradle scripts, update both.
+Run `diff -r scripts/apk/gradle templates/game/android/gradle --exclude=build
+--exclude=.gradle --exclude=jniLibs --exclude=local.properties` to confirm they
+match.
 
-# ARMv7
-cargo build --target armv7-linux-androideabi --release \
-  --no-default-features --features opengl
-
-# Output:
-# target/aarch64-linux-android/release/libyour_game.so
-# target/armv7-linux-androideabi/release/libyour_game.so
-```
-
-### Using the CLI Tool
-
-```bash
-soldatik3d build --target android --release
-```
-
-## Building APK
-
-### Using build_apk.sh (Included in Template)
-
-```bash
-# Debug APK
-./build_apk.sh arm64-v8a
-./build_apk.sh armeabi-v7a
-
-# Release APK
-./build_apk.sh arm64-v8a --release
-./build_apk.sh armeabi-v7a --release
-
-# Output:
-# apk/app-arm64-v8a-debug.apk
-# apk/app-armeabi-v7a-release.apk
-```
-
-### Manual Gradle Build
-
-```bash
-# 1. Prepare Gradle project (from template source)
-mkdir -p android/gradle
-# Option A: From engine repo (scripts/apk/gradle/)
-cp -r scripts/apk/gradle/* android/gradle/
-# Option B: From template (if project was created with s3d new)
-# cp -r android/gradle/ android/gradle/  # already included in template
-
-# 2. Copy native library
-mkdir -p android/gradle/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libyour_game.so \
-   android/gradle/app/src/main/jniLibs/arm64-v8a/libyour_game.so
-
-# 3. Build
-cd android/gradle
-chmod +x gradlew
-./gradlew assembleRelease
-
-# Output:
-# app/build/outputs/apk/release/app-release.apk
-```
-
-### Using the CLI Tool
-
-```bash
-soldatik3d apk arm64-v8a --release
-soldatik3d apk armeabi-v7a --release
-```
-
-## Installing on Device
-
-### ADB Install
-
-```bash
-# Enable USB Debugging on device
-# Settings → Developer Options → USB Debugging
-
-# Connect device
-adb devices
-
-# Install
-adb install -r apk/app-arm64-v8a-release.apk
-
-# Launch
-adb shell am start -n com.yourgame.game/android.app.NativeActivity
-```
-
-### Install Multiple ABIs (Universal APK)
-
-The Gradle template builds a universal APK with both ABIs:
-
-```bash
-./gradlew assembleRelease
-# Output: app/build/outputs/apk/release/app-release.apk
-# Contains both arm64-v8a and armeabi-v7a libs
-```
-
-## Android Manifest Configuration
-
-The template includes proper manifest:
+The manifest uses the `${soldatik3DLibName}` placeholder:
 
 ```xml
-<!-- android/gradle/app/src/main/AndroidManifest.xml -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.yourgame.game">
-
-    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
-    
-    <application
-        android:hasCode="false"
-        android:label="@string/app_name"
-        android:icon="@mipmap/ic_launcher">
-        
-        <meta-data
-            android:name="android.app.lib_name"
-            android:value="your_game" />
-        
-        <activity
-            android:name="android.app.NativeActivity"
-            android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|density"
-            android:screenOrientation="landscape"
-            android:theme="@style/Theme.Soldatik3D.Fullscreen">
-            
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="your_game" />
-                
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-</manifest>
+<activity
+    android:name="android.app.NativeActivity"
+    android:configChanges="orientation|keyboardHidden|screenSize"
+    android:exported="true">
+    <meta-data
+        android:name="android.app.lib_name"
+        android:value="${soldatik3DLibName}" />
+</activity>
 ```
 
-**Key points:**
-- `android:hasCode="false"` - No Java code, pure native
-- `android.app.lib_name="your_game"` - Matches `libyour_game.so`
-- `NativeActivity` - Handles window/input/events
-- `android:configChanges` - Prevents activity recreation on rotation
-
-## Game Code for Android
-
-Your `src/lib.rs` needs the Android entry point:
-
-```rust
-use soldatik3d::{run, run_android, Game, GameConfig, UpdateContext, World};
-
-// Your game struct
-struct MyGame;
-
-impl Game for MyGame {
-    fn config(&self) -> GameConfig { GameConfig::default() }
-    fn create_world(&mut self) -> World { World::default() }
-    fn update(&mut self, ctx: &mut UpdateContext<'_>) { /* ... */ }
-}
-
-// Desktop entry point
-fn main() -> anyhow::Result<()> { run(MyGame) }
-
-// Android entry point - REQUIRED
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub fn android_main(app: soldatik3d::winit::platform::android::activity::AndroidApp) {
-    if let Err(e) = run_android(MyGame, app) {
-        eprintln!("Game failed: {e:?}");
-    }
-}
-```
-
-**Key points:**
-- `#[unsafe(no_mangle)] pub fn android_main` - Required by `android-activity`
-- Parameter is `AndroidApp` from `android-activity` crate
-- Calls `run_android()` instead of `run()`
-
-## Asset Loading on Android
-
-Assets are packaged in the APK's `assets/` directory:
+## Building the engine demo APK
 
 ```bash
-# In your game project
-mkdir -p assets/textures assets/models
+export JAVA_HOME=/path/to/jdk-17
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
 
-# Gradle copies assets/ to APK automatically
-# Access at runtime:
-let texture = ctx.renderer.load_texture("assets/textures/albedo.png")?;
+./scripts/apk/build_apk.sh arm64-v8a
+./scripts/apk/build_apk.sh arm64-v8a --release
 ```
 
-**Note:** Use relative paths from `assets/` root. Android assets are read-only.
+The script:
 
-## Input Handling on Android
+1. resolves the NDK and NDK linker for the ABI,
+2. builds `demo` with `--no-default-features --features opengl`,
+3. copies `libdemo.so` into
+   `scripts/apk/gradle/app/src/main/jniLibs/<abi>/`,
+4. exports the `SOLDATIK3D_ANDROID_*` variables,
+5. runs `./gradlew --no-daemon assembleDebug` or `assembleRelease`,
+6. copies the APK to `apk/app-<abi>-<debug|release>.apk`.
 
-### Touch Input
-
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    for touch in &ctx.input.touches {
-        match touch.phase {
-            TouchPhase::Started => { /* touch down */ }
-            TouchPhase::Moved => { /* drag */ }
-            TouchPhase::Ended => { /* touch up */ }
-            TouchPhase::Cancelled => { /* interrupted */ }
-        }
-        let pos = touch.position; // Normalized 0-1
-    }
-}
-```
-
-### Virtual Keyboard
-
-```rust
-// Text input not directly supported in NativeActivity
-// Use external library or implement Java bridge
-```
-
-### Gamepad
-
-```rust
-if let Some(pad) = ctx.input.gamepad(0) {
-    // Standard gamepad mapping works
-}
-```
-
-## Performance Considerations
-
-### GPU Features
-
-| Feature | Support |
-|---------|---------|
-| OpenGL ES 3.0 | ✅ Required |
-| OpenGL ES 3.1 | ✅ Most devices |
-| OpenGL ES 3.2 | ✅ Modern devices |
-| Vulkan | ❌ Not supported in engine |
-| Compute Shaders | ✅ ES 3.1+ |
-| Geometry Shaders | ✅ ES 3.2+ |
-
-### Memory Management
-
-```rust
-// Monitor memory
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    if cfg!(target_os = "android") {
-        // Check available memory
-        // Reduce texture quality if low
-    }
-}
-```
-
-### Battery Life
-
-```rust
-// Limit frame rate
-ctx.renderer.set_vsync(VsyncMode::On)?;
-
-// Reduce GPU work when backgrounded
-// (NativeActivity handles pause/resume)
-```
-
-## Debugging
-
-### Logcat
+Inspect the result:
 
 ```bash
-# Filter for your game
-adb logcat -s "your_game:V" "android-activity:V" "NativeActivity:V"
+unzip -l apk/app-arm64-v8a-debug.apk | grep lib/
+# lib/arm64-v8a/libdemo.so
 
-# Or all Rust logs
-adb logcat | grep -E "your_game|error|Error"
-
-# Save to file
-adb logcat -d > game_log.txt
+$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2 dump badging \
+  apk/app-arm64-v8a-debug.apk | grep -E 'package:|native-code|sdkVersion|targetSdkVersion'
 ```
 
-### GDB Debugging
+## Building a game APK
+
+Every project created by `s3d new` contains its own `android/gradle` and a
+`build_apk.sh` at the project root:
 
 ```bash
-# 1. Build with debug symbols
-cargo build --target aarch64-linux-android
+cd my_game
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
 
-# 2. Start gdbserver on device
-adb shell run-as com.yourgame.game \
-  /data/local/tmp/gdbserver :5039 /data/app/~~/lib/arm64/libyour_game.so
+./build_apk.sh arm64-v8a
+./build_apk.sh arm64-v8a --release
 
-# 3. Forward port
-adb forward tcp:5039 tcp:5039
-
-# 4. Connect from host
-gdb-multiarch target/aarch64-linux-android/debug/your_game
-(gdb) target remote localhost:5039
+# Equivalent:
+s3d apk arm64-v8a --release
 ```
 
-### Graphics Debugging
+The generated `build_apk.sh` derives the library name from the Cargo package
+name (`my_game` → `libmy_game.so`) and the application ID from
+`com.soldatik3d.<package>`. To change them, edit the exports near the end of
+the script.
+
+Output: `my_game/apk/app-<abi>-<debug|release>.apk`.
+
+Install and run:
 
 ```bash
-# Android GPU Inspector (AGI)
-# 1. Install AGI from https://github.com/google/agi
-# 2. Connect device
-# 3. Trace your game
-
-# Or use RenderDoc (limited Android support)
+adb install -r apk/app-arm64-v8a-debug.apk
+adb shell am start -n com.soldatik3d.my_game/android.app.NativeActivity
+adb logcat -s Soldatik3D RustStdoutStderr
 ```
 
-### Crash Dumps
+## Assets
+
+On Android, game assets must live inside the APK. `build.rs` in the generated
+project copies `assets/` into `android/gradle/app/src/main/assets` before the
+Rust compilation, and Gradle packages that directory. Desktop builds read
+assets relative to the working directory, so no copy happens there.
+
+Shader source files are not loaded from disk at runtime: both backends embed
+their GLSL at compile time.
+
+## Signing
+
+Release APKs are signed with the standard Android debug key unless a keystore is
+configured. This makes every release APK installable out of the box, but it is
+not suitable for Play Store distribution.
+
+To sign with your own key:
 
 ```bash
-# Get tombstones
-adb shell ls /data/tombstones/
-adb pull /data/tombstones/tombstone_00 .
+export SOLDATIK3D_KEYSTORE=$HOME/keys/release.jks
+export SOLDATIK3D_KEYSTORE_PASSWORD=...
+export SOLDATIK3D_KEY_ALIAS=release
+export SOLDATIK3D_KEY_PASSWORD=...
 
-# Use ndk-stack to symbolicate
-$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump \
-  -d target/aarch64-linux-android/debug/your_game > symbols.txt
-$ANDROID_NDK_HOME/ndk-stack -sym target/aarch64-linux-android/debug/your_game \
-  -dump tombstone_00
+./build_apk.sh arm64-v8a --release
 ```
 
-## Publishing to Play Store
-
-### App Bundle (AAB)
+Verify the signature:
 
 ```bash
-# In Gradle project
-cd android/gradle
-./gradlew bundleRelease
-
-# Output: app/build/outputs/bundle/release/app-release.aab
-# Upload to Play Console
+$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner verify --print-certs \
+  apk/app-arm64-v8a-release.apk
 ```
 
-### Signing
+`s3d apk --sign` currently prints a notice; signing is controlled by the
+environment variables above and happens inside Gradle.
 
-```gradle
-# android/gradle/app/build.gradle.kts
-android {
-    signingConfigs {
-        create("release") {
-            storeFile = file("keystore.jks")
-            storePassword = "storepass"
-            keyAlias = "keyalias"
-            keyPassword = "keypass"
-        }
-    }
-    buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("release")
-        }
-    }
-}
-```
+## CI and release APKs
 
-### Versioning
+The Android CI job runs on every push and pull request:
 
-```gradle
-defaultConfig {
-    versionCode = 1
-    versionName = "1.0.0"
-}
-```
+1. installs JDK 17, SDK 34 and NDK r26c,
+2. adds the Android Rust targets,
+3. copies `scripts/apk/gradle` to a temporary build directory,
+4. builds the demo with the OpenGL ES backend,
+5. runs `assembleDebug` and verifies the APK contains
+   `lib/arm64-v8a/libdemo.so`,
+6. uploads `app-arm64-v8a-debug.apk` as a workflow artifact.
+
+The release workflow builds `assembleRelease` for `arm64-v8a` and
+`armeabi-v7a` and attaches both APKs directly to the GitHub Release.
 
 ## Troubleshooting
 
-### `android_main` not found
+| Symptom | Cause and fix |
+|---------|---------------|
+| `Android NDK not found` | Set `ANDROID_NDK_HOME`, or install an NDK under `$ANDROID_SDK_ROOT/ndk` |
+| `SDK location not found` | Set `ANDROID_SDK_ROOT`/`ANDROID_HOME`; the script writes `local.properties` |
+| `Could not find or load main class "-Xmx64m"` | Broken or CRLF `gradlew`; use the bundled wrapper and `sh ./gradlew` |
+| `error: attribute android:cx not found` | Launcher icons use unsupported vector elements; only `<path>` is portable |
+| App installs but exits immediately | Check `adb logcat` for a missing library or renderer initialization error |
+| `lib<name>.so` not found in the APK | The Cargo `[lib] name` and `SOLDATIK3D_ANDROID_LIB_NAME` differ |
+| Gradle cannot download the distribution | The wrapper needs network access to `services.gradle.org`; set a proxy or pre-populate `GRADLE_USER_HOME` |
 
-```bash
-# Check export
-nm -D target/aarch64-linux-android/release/libyour_game.so | grep android_main
-# Should show: T android_main
+## Next steps
 
-# Ensure in src/lib.rs:
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub fn android_main(app: ...) { ... }
-```
-
-### Black screen / crash on startup
-
-```bash
-# Check logcat
-adb logcat -s "NativeActivity:V" "android-activity:V"
-
-# Common issues:
-# - Missing android.app.lib_name meta-data
-# - Wrong lib name (must match lib_name)
-# - OpenGL ES version not supported
-# - Missing permissions
-```
-
-### `dlopen failed: library "libyour_game.so" not found`
-
-```bash
-# Check jniLibs in APK
-unzip -l apk/app-arm64-v8a-release.apk | grep libyour_game.so
-# Should be in lib/arm64-v8a/libyour_game.so
-
-# Check build.gradle includes jniLibs
-sourceSets {
-    main {
-        jniLibs.srcDirs("src/main/jniLibs")
-    }
-}
-```
-
-### OpenGL ES errors
-
-```bash
-# Enable debug output
-# In Game::create_world or first update
-// Not directly available in NativeActivity
-# Use SOLDATIK3D_VALIDATION=1 for Vulkan (not applicable)
-// For OpenGL: check logcat for EGL errors
-```
-
-### Performance issues
-
-```bash
-# Profile with Android GPU Inspector
-# Check:
-# - GPU frame time
-# - Memory usage
-# - Shader compilation stalls
-# - Draw call count
-```
-
-## CI/CD for Android
-
-```yaml
-# .github/workflows/android.yml
-name: Android Build
-
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        abi: [arm64-v8a, armeabi-v7a]
-        include:
-          - abi: arm64-v8a
-            target: aarch64-linux-android
-          - abi: armeabi-v7a
-            target: armv7-linux-androideabi
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26c
-          
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-          
-      - name: Build native
-        run: |
-          cargo build --locked --release \
-            --no-default-features --features opengl \
-            --target ${{ matrix.target }}
-          
-      - name: Build APK
-        run: |
-          # Setup Gradle project
-          # Copy lib to jniLibs
-          # ./gradlew assembleRelease
-        # (Use the full build_apk.sh logic)
-        
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-${{ matrix.abi }}
-          path: apk/
-          retention-days: 14
-```
-
----
-
-*See [Cross-Compilation](cross-compilation.md) for building Android from Linux, or [CLI Tool](reference/cli.md) for `soldatik3d apk` command.*
+- [Cross-compilation](cross-compilation.md)
+- [Configuration](../reference/configuration.md)
+- [CI and releases](../CI.md)

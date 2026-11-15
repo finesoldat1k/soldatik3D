@@ -1,227 +1,206 @@
-# Сборка и CI
+# CI and Releases
 
-Документ описывает, как Soldatik3D собирается локально и в GitHub Actions.
-Каноническая конфигурация находится в
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) и
-[`.github/workflows/release.yml`](../.github/workflows/release.yml).
+Soldatik3D has two GitHub Actions workflows:
 
----
+| Workflow | File | Trigger |
+|----------|------|---------|
+| CI | `.github/workflows/ci.yml` | Every push, every pull request, manual dispatch |
+| Release | `.github/workflows/release.yml` | GitHub Release published, manual dispatch |
 
-## 1. Поддерживаемые платформы
+Both use `ubuntu-latest` for Linux and Android and `windows-latest` for Windows.
+They pin stable Rust and use `Swatinem/rust-cache@v2`.
 
-| Платформа | Архитектура | Бэкенды в CI | Артефакты |
-| --- | --- | --- | --- |
-| Linux | x86_64 | Vulkan + OpenGL | `soldatik3d-engine-linux-x86_64.tar.gz`, `soldatik3d-demo-linux-x86_64.tar.gz` |
-| Windows | x86_64 (MSVC) | Vulkan + OpenGL | `soldatik3d-engine-windows-x86_64.zip`, `soldatik3d-demo-windows-x86_64.zip` |
-| Android | arm64-v8a, armeabi-v7a | OpenGL ES | `soldatik3d-engine-android-<abi>.tar.gz`, `soldatik3d-demo-android-<abi>.tar.gz` |
+## CI jobs
 
-macOS, iOS и WebAssembly в проект не входят. Платформенные ветки для них
-удалены из `platform`, чтобы не поддерживать неработающие конфигурации.
+### Linux x86_64
 
----
+1. Installs X11/Wayland, Mesa, Vulkan and `libshaderc-dev`.
+2. Points `shaderc-sys` at the system `libshaderc.so.1` because Ubuntu's
+   `libshaderc_combined.a` is incomplete.
+3. Runs `cargo fmt --all -- --check`.
+4. Runs clippy with `--workspace --all-targets --all-features`.
+5. Builds `runtime` and `demo` separately.
+6. Runs workspace tests.
+7. Builds rustdoc with `--no-deps`.
+8. Packages debug artifacts and uploads them.
 
-## 2. Workflow `CI`
+Artifacts, retained for 14 days:
 
-Запускается на **каждый push** (в любую ветку), на pull request и вручную
-через `workflow_dispatch`.
+- `soldatik3d-engine-linux-x86_64.tar.gz` — `libruntime.rlib`
+- `soldatik3d-demo-linux-x86_64.tar.gz` — `demo`
 
-| Job | Что делает |
-| --- | --- |
-| `linux` | `cargo fmt --check`, clippy, сборка движка, сборка демо, тесты, rustdoc, упаковка артефактов |
-| `windows` | clippy, сборка движка и демо (MSVC), тесты, упаковка артефактов |
-| `android` | matrix из arm64-v8a и armeabi-v7a: NDK r26c, сборка движка и демо под OpenGL ES, упаковка артефактов |
+### Windows x86_64 (MSVC)
 
-Движок и игра всегда собираются **отдельными командами**:
+Runs clippy, builds `runtime` and `demo`, runs tests, and uploads:
 
-```bash
-cargo build --locked -p runtime --all-features
-cargo build --locked -p demo --all-features
+- `soldatik3d-engine-windows-x86_64.zip` — `libruntime.rlib`
+- `soldatik3d-demo-windows-x86_64.zip` — `demo.exe`
+
+Windows CI uses the native MSVC toolchain, so both backends are compiled.
+
+### Android (matrix: `arm64-v8a`, `armeabi-v7a`)
+
+Each matrix entry:
+
+1. Installs NDK r26c with `nttld/setup-ndk@v1`.
+2. Adds the matching Rust target.
+3. Installs JDK 17.
+4. Exports the NDK linker, `CC_*` and `AR_*` variables.
+5. Builds `runtime` and `demo` with `--no-default-features --features opengl`.
+6. Installs Android SDK platform 34 and build-tools 34.0.0.
+7. Copies `scripts/apk/gradle` to a temporary `android/gradle`, copies
+   `libdemo.so` into `jniLibs/<abi>/`, and runs `assembleDebug`.
+8. Verifies the APK contains `lib/<abi>/libdemo.so` and `AndroidManifest.xml`.
+9. Uploads engine, native demo and APK artifacts.
+
+Artifacts, retained for 14 days:
+
+- `soldatik3d-engine-android-<abi>.tar.gz` — `libruntime.rlib`
+- `soldatik3d-demo-android-<abi>.tar.gz` — `libdemo.so` and
+  `app-<abi>-debug.apk`
+
+`fail-fast` is disabled so both ABIs report independently.
+
+## Release jobs
+
+The release workflow listens for `release: types: [published]`, which includes
+prereleases. It also has `workflow_dispatch` for building artifacts manually;
+in that case the publish job is skipped because it requires
+`github.event_name == 'release'`.
+
+### Linux
+
+Builds release `runtime`, `demo` and `s3d`. The demo is linked with:
+
+```text
+-C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags
 ```
 
-`runtime` — это библиотека движка, `demo` — игра. На Android включён только
-OpenGL ES, потому что Vulkan-бэкенд не компилируется под Android (см. раздел
-5). Артефакты движка на Android — `libruntime.rlib`, игры — нативная
-библиотека `libdemo.so` (native-activity `cdylib` с экспортом `android_main`),
-а не самостоятельный исполняемый файл.
+and packages `libshaderc.so.1` and `libvulkan.so.1` next to the executable.
+Uploads:
 
-Rust-кэш (`Swatinem/rust-cache`) хранит `target/` между запусками. Первая
-сборка может быть долгой из-за `shaderc-sys`: он собирает C++-часть shaderc
-из исходников, если в системе не найдена готовая библиотека.
+- `soldatik3d-engine-linux-x86_64.tar.gz` — `libruntime.rlib`
+- `soldatik3d-demo-linux-x86_64.tar.gz` — `demo`, bundled libraries, `README.txt`
+- `soldatik3d-cli-linux-x86_64.tar.gz` — the `s3d` toolkit (see below)
 
----
+### Windows
 
-## 3. Workflow `Release`
+Builds release `runtime`, `demo` and `s3d` with MSVC and uploads:
 
-Запускается при **публикации GitHub Release**, включая prerelease
-(`release: types: [published]`), и вручную через `workflow_dispatch`.
+- `soldatik3d-engine-windows-x86_64.zip` — `libruntime.rlib`
+- `soldatik3d-demo-windows-x86_64.zip` — `demo.exe`, `README.txt`
+- `soldatik3d-cli-windows-x86_64.zip` — the `s3d` toolkit
 
-Порядок:
+### Android
 
-1. Собираются release-версии движка и демо для Linux, Windows (MSVC) и
-   Android (arm64-v8a + armeabi-v7a).
-2. Артефакты складываются в `dist/` и загружаются как GitHub Actions
-   artifacts.
-3. Job `publish` скачивает все артефакты и прикрепляет архивы к тому же
-   GitHub Release через `softprops/action-gh-release`.
-4. Флаг `prerelease` берётся из события: prerelease остаётся prerelease.
+Builds release `runtime` and `demo` for both ABIs, packages them with
+`assembleRelease`, verifies the APK and uploads:
 
-Чтобы выпустить версию:
+- `soldatik3d-engine-android-<abi>.tar.gz` — `libruntime.rlib`
+- `soldatik3d-demo-android-<abi>.tar.gz` — `libdemo.so`, release APK, `README.txt`
+
+Release APKs are signed with the Android debug key unless the release
+environment provides `SOLDATIK3D_KEYSTORE`, `SOLDATIK3D_KEYSTORE_PASSWORD`,
+`SOLDATIK3D_KEY_ALIAS` and `SOLDATIK3D_KEY_PASSWORD`.
+
+### Publish
+
+The `publish` job waits for Linux, Windows and Android, downloads every
+`release-*` artifact, and attaches:
+
+- `*.tar.gz`
+- `*.zip`
+- `*.apk`
+
+to the GitHub Release with `softprops/action-gh-release@v2`.
+`fail_on_unmatched_files` is enabled, so a missing artifact fails the job
+instead of silently producing an incomplete release. The workflow declares
+`contents: write`; prereleases are preserved via
+`prerelease: ${{ github.event.release.prerelease }}`.
+
+## CLI toolkit archive
+
+The `soldatik3d-cli-*` archive is not a single binary. `s3d new` needs the game
+template and the engine sources that the generated project references. Layout:
+
+```text
+soldatik3d-cli-linux-x86_64/
+├── bin/
+│   └── s3d
+├── templates/
+│   └── game/
+├── crates/
+│   ├── assets/
+│   ├── scene/
+│   ├── ui/
+│   ├── render/
+│   ├── platform/
+│   ├── vulkan/
+│   ├── opengl/
+│   ├── runtime/
+│   └── s3d/
+├── examples/
+│   └── demo/
+├── Cargo.toml
+├── Cargo.lock
+├── README.md
+└── LICENSE
+```
+
+`examples/demo` is included because the root `Cargo.toml` lists it as a
+workspace member and Cargo requires every member to exist when resolving the
+workspace.
+
+`find_template_dir` checks `../templates/game` relative to the executable, so
+`bin/s3d` finds `templates/game` in the same archive. `find_engine_root` then
+points generated projects at `crates/runtime` inside the extracted toolkit.
+Keep the toolkit directory in place if you want generated projects to keep
+building.
+
+On Windows the layout is identical with `bin/s3d.exe` inside a `.zip`.
+
+## Creating a release
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Затем создайте GitHub Release из тега и опубликуйте его (можно отметить
-`Set as a pre-release`). Workflow сам разложит бинарники по ассетам релиза.
+Then create a GitHub Release from the tag. Marking it as a prerelease still
+triggers the workflow. The release is published by GitHub, and the workflow
+attaches the artifacts afterwards; refresh the release page when it finishes.
 
-Для ручного запуска release-сборки без публикации используйте
-`Actions -> Release -> Run workflow`; job `publish` при этом пропускается,
-а артефакты остаются в Actions.
+To build release artifacts without publishing, run the Release workflow
+manually with **Run workflow**. The publish job will be skipped.
 
----
+## Local equivalents
 
-## 4. Локальная сборка
+| CI step | Local command |
+|---------|---------------|
+| Formatting | `cargo fmt --all -- --check` |
+| Clippy | `cargo clippy --locked --workspace --all-targets --all-features` |
+| Build runtime | `cargo build --locked -p runtime --all-features` |
+| Build demo | `cargo build --locked -p demo --all-features` |
+| Tests | `cargo test --locked --workspace --all-features` |
+| Docs | `cargo doc --locked --workspace --no-deps --all-features` |
+| Linux package | `./scripts/cross_build.sh linux --release` |
+| Debug APK | `./scripts/apk/build_apk.sh arm64-v8a` |
+| Release APK | `./scripts/apk/build_apk.sh arm64-v8a --release` |
+| Game APK | `./build_apk.sh arm64-v8a --release` in the project |
 
-### Linux
+## Common CI problems
 
-Зависимости (Debian/Ubuntu):
+| Symptom | Cause |
+|---------|-------|
+| Linker cannot find shaderc symbols | Ubuntu's combined static library is incomplete; use the `SHADERC_LIB_DIR` workaround shown in the workflow |
+| `Could not find or load main class "-Xmx64m"` | Broken Gradle wrapper; the repository's `gradlew` must be LF-only and executable |
+| `attribute android:cx not found` | Unsupported vector drawable element; launcher icons must use `<path>` |
+| APK built but no library | `SOLDATIK3D_ANDROID_LIB_NAME` does not match the Cargo `[lib] name` |
+| Release asset missing | `fail_on_unmatched_files` makes the publish job fail; check the per-platform job logs |
+| `not a valid NDK` | `nttld/setup-ndk` needs a full NDK version such as `r26c`, not a partial one |
 
-```bash
-sudo apt-get install -y \
-  build-essential pkg-config cmake ninja-build git python3 \
-  libvulkan-dev libshaderc-dev \
-  libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxkbcommon-dev \
-  libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev
-```
+## Related
 
-```bash
-cargo build --locked -p runtime --all-features
-cargo build --locked -p demo --all-features
-cargo test --locked --workspace --all-features
-```
-
-`libshaderc-dev` содержит заголовки и библиотеки, но в Ubuntu 24.04
-`libshaderc_combined.a` из этого пакета **не является полностью объединённой
-библиотекой**: в ней нет объектов glslang/SPIRV-Tools, и линковка исполняемого
-файла падает с `undefined symbol: glslang::InitializeProcess`. CI обходит это,
-указывая `shaderc-sys` на настоящую shared-библиотеку:
-
-```bash
-mkdir -p /tmp/shaderc-lib
-ln -sf /usr/lib/x86_64-linux-gnu/libshaderc.so.1 \
-  /tmp/shaderc-lib/libshaderc_shared.so
-export SHADERC_LIB_DIR=/tmp/shaderc-lib
-```
-
-Без `libshaderc-dev` `shaderc-sys` собирает библиотеку из исходников; для
-этого нужны CMake, Ninja, Python 3 и C++17-компилятор.
-
-### Windows
-
-Нужны Rust stable с toolchain MSVC, Visual Studio Build Tools (C++), CMake,
-Ninja и Python 3. Проще всего запускать те же команды в
-`x64 Native Tools Command Prompt for VS`:
-
-```powershell
-cargo build --locked -p runtime --all-features
-cargo build --locked -p demo --all-features
-cargo test --locked --workspace --all-features
-```
-
-Кросс-сборка из Linux под `x86_64-pc-windows-gnu` поддерживается скриптом
-`cross_build.sh windows`, но она собирает только OpenGL-вариант: C++-часть
-shaderc сложно гарантированно собрать любым MinGW-тулчейном. Каноническая
-Windows-сборка — нативная MSVC в CI.
-
-### Android
-
-Нужен NDK r26c (или новее) и Rust-таргеты:
-
-```bash
-export ANDROID_NDK_HOME="$HOME/android-ndk-r26c"
-rustup target add aarch64-linux-android armv7-linux-androideabi
-
-./cross_build.sh android arm64-v8a
-./cross_build.sh android armeabi-v7a
-```
-
-Скрипт выставляет `CARGO_TARGET_<TRIPLE>_LINKER`, `CC_<TRIPLE>` и
-`AR_<TRIPLE>` на компиляторы NDK (`aarch64-linux-android29-clang` /
-`armv7a-linux-androideabi29-clang`), а также
-`CMAKE_POLICY_VERSION_MINIMUM=3.5` для совместимости vendored-сборки `shaderc`
-с CMake 4, и собирает движок и демо отдельно.
-Результаты — в `dist/android-<abi>/<triple>/`: `libruntime.rlib` и
-`libdemo.so`.
-
-Те же переменные можно выставить вручную:
-
-```bash
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=\
-  "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
-export AR_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-cargo build --locked -p runtime --no-default-features --features opengl \
-  --target aarch64-linux-android
-```
-
----
-
-## 5. Особенности Android
-
-- Используется `winit` с feature `android-native-activity`; это не требует
-  Jetpack GameActivity и Gradle-плагина.
-- Демо собрано как `cdylib` (`libdemo.so`) и экспортирует
-  `#[unsafe(no_mangle)] pub fn android_main(app: AndroidApp)`. Хост
-  `android.app.NativeActivity` загружает библиотеку через
-  `android.app.lib_name` и вызывает эту функцию на главном Android-потоке.
-  Отдельного ELF-исполняемого файла `demo` на Android больше нет.
-- Контекст создаётся через EGL как **OpenGL ES 3.0**. Desktop-шейдеры
-  (`#version 330 core`) при компиляции переводятся в `#version 300 es` с
-  добавлением precision-квалификаторов; HDR-таргеты используют `RGBA16F`
-  только при наличии `EXT_color_buffer_half_float`/`EXT_color_buffer_float`,
-  иначе откатываются на `RGBA8`.
-- В `crates/vulkan/Cargo.toml` нативные зависимости (`ash`, `shaderc`, `png`
-  и т. д.) находятся под `cfg(not(target_os = "android"))`. Поэтому
-  `cargo build --workspace` под Android не тянет `shaderc`.
-- В `runtime` ветка Vulkan-бэкенда включается только для не-Android целей;
-  по умолчанию на Android выбирается OpenGL. Явный
-  `SOLDATIK3D_BACKEND=vulkan` на Android вернёт понятную ошибку «backend is
-  not available».
-- Release-артефакт Android — `libdemo.so`, а не APK. Чтобы запустить демо,
-  нужен APK-хост: activity `android.app.NativeActivity` (или её наследник),
-  `android:hasCode="false"` в манифесте, `libdemo.so` в `lib/<abi>/` и
-  meta-data `android.app.lib_name="demo"`. Без такого хоста библиотеку
-  загрузить нельзя.
-
----
-
-## 6. Переменные CI и кросс-компиляции
-
-| Переменная | Назначение |
-| --- | --- |
-| `CARGO_TARGET_<TRIPLE>_LINKER` | линкер для целевого триплета |
-| `CC_<TRIPLE>` / `AR_<TRIPLE>` | C-компилятор и архиватор для build-скриптов |
-| `SHADERC_LIB_DIR` | каталог с `libshaderc_shared.so` (CI указывает на `/tmp/shaderc-lib`); необязательно |
-| `VULKAN_SDK` | Vulkan SDK; `shaderc-sys` попробует взять библиотеку оттуда |
-
-Имена переменных с целевым триплетом бывают в двух формах: с дефисами
-(`CC_aarch64-linux-android`) и с подчёркиваниями
-(`CC_aarch64_linux_android`); `cc-rs` понимает обе. Дефисную форму нельзя
-`export`-ить обычным способом — используйте
-`env 'CC_aarch64-linux-android=...'` или запись в `$GITHUB_ENV`, как это
-делает workflow. `cross_build.sh` использует форму с подчёркиваниями.
-
----
-
-## 7. Диагностика
-
-- `shaderc-sys` долго собирается? Установите `libshaderc-dev` (Linux) или
-  Vulkan SDK (Windows), либо дождитесь заполнения Rust-кэша.
-- Windows-job падает на C++/CMake? Проверьте, что в образе есть Ninja и
-  Python 3; workflow использует `windows-latest`.
-- Android: `failed to find tool "aarch64-linux-android-clang"` означает, что
-  не выставлен `CARGO_TARGET_..._LINKER`. Проверьте `ANDROID_NDK_HOME` и
-  наличие `toolchains/llvm/prebuilt/linux-x86_64/bin`.
-- Release не прикрепил файлы? У job `publish` должны быть права
-  `contents: write`; они заданы на уровне workflow.
+- [Cross-compilation](guides/cross-compilation.md)
+- [Android guide](guides/android.md)
+- [Installation](getting-started/installation.md)

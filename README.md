@@ -7,8 +7,6 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![CI](https://github.com/finesoldat1k/soldatik3D/actions/workflows/ci.yml/badge.svg)
 ![Release](https://github.com/finesoldat1k/soldatik3D/actions/workflows/release.yml/badge.svg)
-![Crates.io](https://img.shields.io/crates/v/soldatik3d?color=orange)
-![Docs](https://img.shields.io/docsrs/soldatik3d)
 
 **soldatik3D** — a modular 3D game engine in Rust with two production-ready graphics backends: **Vulkan 1.2** and **OpenGL 3.3 core / ES 3.0**. The repository contains the engine and a demonstration game that uses only the public `runtime` API, completely agnostic to the underlying graphics API.
 
@@ -30,7 +28,7 @@ The engine is built from focused crates with single responsibilities: assets, sc
     </tr>
     <tr>
       <td><img src="docs/screenshots/vulkan-console.png" width="400"/></td>
-      <td><img src="docs/screenshots/vulkan-normals.png" width="200"/><img src="docs/screenshots/vulkan-wireframe.png" width="200"/></td>
+      <td><img src="docs/screenshots/vulkan-normals.png" width="400"/></td>
     </tr>
   </table>
 </div>
@@ -48,7 +46,7 @@ The engine is built from focused crates with single responsibilities: assets, sc
 - **Frustum Culling** — Camera and light frustum culling for optimal draw calls.
 - **Cameras as Engine Citizens** — `World` and `CameraRig` allow spawning named cameras, selecting active, cycling next/prev, and removing them. Runtime always renders through the active camera.
 - **Built-In Developer Console** — Command registry, Tab completion, input history, hints, and extensible with game commands. Opens with `F1` or `` ` ``.
-- **Immediate-Mode UI** — Built-in bitmap font (uppercase/lowercase `a-z`, digits, punctuation), panels, buttons, status overlays, crosshair.
+- **Immediate-Mode UI** — `UiDrawList` with rectangles, built-in bitmap text and a crosshair; the demo builds its panels and buttons on top of it.
 - **Screenshots & Diagnostics** — `F12` or `screenshot` command saves current frame as PNG; `SOLDATIK3D_VALIDATION=1` enables Vulkan validation layers.
 - **Cross-Platform Window & Input** — Via `winit`, isolated in `platform` crate; backends receive only raw handles and surface size.
 - **Demo Game** — Procedural level, 7 cameras, lighting, collisions, FPS controller, debug views.
@@ -77,11 +75,12 @@ soldatik3D/
 │   └── s3d/              # CLI tool: project creation, building, exporting
 ├── examples/
 │   └── demo/             # Demo game (package `demo`)
+├── scripts/
+│   ├── cross_build.sh    # Local Linux/Windows/Android builds
+│   └── apk/              # build_apk.sh + Gradle template (CI source of truth)
 ├── templates/
-│   ├── game-project/     # Game project template (Cargo.toml, build.rs, lib.rs, build_apk.sh)
-│   └── android/gradle/   # Android Gradle template with NativeActivity
+│   └── game/             # Self-contained game project template (desktop + Android)
 ├── docs/                 # Full documentation (guides, API reference, examples)
-├── cross_build.sh        # Local cross-compilation Linux/Windows/Android
 ├── Cargo.toml            # Workspace
 └── LICENSE               # GPL-3.0
 ```
@@ -174,7 +173,7 @@ cd my_game
 cargo run
 
 # Build for all platforms
-s3d build --target all --release
+s3d build all --release
 
 # Build Android APK
 s3d apk arm64-v8a --release
@@ -183,7 +182,7 @@ s3d apk arm64-v8a --release
 s3d export --platforms linux,windows,android --out-dir dist
 
 # Validate project configuration
-s3d check --target android
+s3d check android
 
 # Show engine info
 s3d info
@@ -193,56 +192,75 @@ s3d info
 
 | Command | Description |
 |---------|-------------|
-| `s3d new <name>` | Create new game project from template |
-| `s3d build --target <linux|windows|android|all> [--release]` | Build for platform(s) |
-| `s3d run [--target linux] [--release]` | Run on desktop |
-| `s3d apk <abi> [--release]` | Build Android APK (arm64-v8a, armeabi-v7a, x86_64) |
-| `s3d export [--platforms linux,windows,android] [--out-dir dist]` | Export distributable packages |
-| `s3d check [--target <platform>]` | Validate project configuration |
+| `s3d new <name> [--dir <path>]` | Create a new game project from the template |
+| `s3d build <linux\|windows\|android\|all> [--release]` | Build for platform(s) |
+| `s3d run [linux\|windows] [--release]` | Run on desktop |
+| `s3d apk <arm64-v8a\|armeabi-v7a\|x86_64> [--release]` | Build an Android APK |
+| `s3d export [--platforms ...] [--out-dir dist]` | Build distributable artifacts |
+| `s3d check [<platform>]` | Validate project configuration |
 | `s3d info` | Show engine version and capabilities |
-| `s3d engine version|link|update` | Engine management |
+| `s3d engine version\|link\|update` | Engine management |
 
-The CLI is built from source with the engine and bundled in release artifacts — no separate `cargo install` needed.
+`s3d` is built with the engine and included in the Linux and Windows release
+archives. It can also be built locally with `cargo build --release -p s3d`.
 
 ---
 
 ## API Overview
 
-The game implements the `Game` trait with three methods:
+A game implements the `Game` trait. The engine owns the window, event loop,
+renderer, input snapshot and developer console; the game owns its state, its
+`World` and all gameplay logic.
 
 ```rust
-use soldatik3d::{run, Game, GameConfig, UpdateContext, World};
+use runtime::glam::Vec3;
+use runtime::{
+    run, Camera, CameraRig, Game, GameConfig, Light, Material, PrimaryLight, Scene,
+    UpdateContext, World,
+};
 
 struct MyGame;
 
 impl Game for MyGame {
     fn config(&self) -> GameConfig {
-        GameConfig::default().with_title("My Game")
+        GameConfig::default()
+            .with_title("My Game")
+            .with_size(1280, 720)
     }
 
     fn create_world(&mut self) -> World {
-        let mut world = World::default();
-        world.add_camera("player".into(), Camera::new()
-            .with_position(Vec3::new(0.0, 2.0, 5.0))
-            .with_fov_y(70.0));
-        world.add_light(Light::directional()
-            .with_direction(Vec3::new(-0.5, -1.0, -0.3).normalize())
-            .with_intensity(3.0));
-        world
+        let scene = Scene::new(Material::default())
+            .with_primary_light(PrimaryLight::default())
+            .with_lights(vec![
+                Light::new(Vec3::new(3.0, 2.0, 3.0), Vec3::ONE, 10.0),
+            ]);
+
+        let mut cameras = CameraRig::empty();
+        cameras.spawn("main", Camera::at(Vec3::new(0.0, 2.0, 5.0)));
+        World::with_cameras(scene, cameras)
     }
 
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // ctx.input, ctx.world, ctx.renderer, ctx.console, ctx.commands
+        // ctx.dt, ctx.input, ctx.world, ctx.ui, ctx.stats, ctx.viewport
+        if let Some(camera) = ctx.world.active_camera_mut() {
+            camera.camera.position.x += ctx.dt;
+        }
     }
 }
 
-fn main() -> anyhow::Result<()> { run(MyGame) }
+fn main() -> anyhow::Result<()> {
+    run(MyGame)
+}
+```
 
-// Android entry point (required for Android builds)
+Android uses the same `Game`; the `cdylib` exports the native-activity entry
+point:
+
+```rust
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub fn android_main(app: soldatik3d::winit::platform::android::activity::AndroidApp) {
-    soldatik3d::run_android(MyGame, app).unwrap();
+pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
+    runtime::run_android(MyGame, app).expect("game failed");
 }
 ```
 
@@ -250,16 +268,19 @@ pub fn android_main(app: soldatik3d::winit::platform::android::activity::Android
 
 | Type | Description |
 |------|-------------|
-| `GameConfig` | Window size, title, VSync, backend, fullscreen |
-| `World` | Cameras, entities, lights |
-| `Camera` | Position, target, FOV, aspect, near/far |
-| `Light` | Directional, Point, Spot, Ambient with shadows |
-| `Material` | PBR: albedo, normal, roughness, metallic, emissive |
-| `Mesh` | Cube, sphere, cylinder, plane, quad, GLTF loading |
-| `Renderer` | Render, resize, screenshot, VSync, debug views |
-| `Input` | Keyboard, mouse, gamepad, touch (Android) |
-| `Console` | Print, error, warning, command execution |
-| `CommandRegistry` | Register custom commands with args |
+| `Game` | Trait implemented by a game: `config`, `create_world`, `update`, optional `debug_view`, `input_map`, `command_help`, `command` |
+| `GameConfig` | Window title, size, cursor lock, `BackendKind`, `VsyncMode` |
+| `World` | Renderable `Scene` plus a `CameraRig`; the runtime renders through the active camera |
+| `Scene` | Meshes, point lights, `PrimaryLight` (shadow caster), one `Material`, clear color. Uploaded once at startup |
+| `Camera` / `CameraRig` | Position, yaw/pitch, FOV, near/far; named cameras with stable IDs and selection |
+| `Mesh` / `Vertex` / `Aabb` | Custom world-space geometry and bounds |
+| `Material` / `TextureData` | Albedo texture, metallic, roughness (one material per scene) |
+| `Light` / `PrimaryLight` | Up to 8 nearest local point lights; one directional shadow-casting light |
+| `Input` / `InputMap` | Keyboard and mouse state plus named action bindings |
+| `UiDrawList` | Immediate-mode rectangles, bitmap text and crosshair in physical pixels |
+| `CommandContext` | Game-defined console command name, arguments and world access |
+| `BackendKind` / `VsyncMode` / `DebugView` | Backend selection, swapchain pacing, debug visualization |
+| `RenderStats` | Vertices, triangles and draw calls of the previous frame |
 
 ---
 
@@ -277,7 +298,7 @@ pub fn android_main(app: soldatik3d::winit::platform::android::activity::Android
 | `F1` / `` ` `` | Toggle console |
 | `Enter` | Execute command |
 | `↑` / `↓` | Command history |
-| `F12` | Screenshot |
+| `F12` | Screenshot (engine-level) |
 | `Esc` | Close console / release cursor / exit |
 | `F2` / `F3` / `F4` | Lit / Normals / Depth |
 
@@ -292,36 +313,58 @@ Built-in commands (type `help` in console):
 | `help` | List all commands |
 | `clear` | Clear console |
 | `quit` / `exit` | Exit game |
-| `backend` | Show current backend |
-| `backend vulkan\|opengl` | Switch backend |
-| `vsync.on\|off\|adaptive\|mailbox` | Set VSync mode |
-| `vsync.toggle` | Toggle VSync |
+| `backend` | Show current backend (`SOLDATIK3D_BACKEND` selects it at startup) |
+| `vsync.on` / `vsync.off` / `vsync.adaptive` / `vsync.mailbox` | Set VSync mode |
+| `vsync.toggle` | Toggle VSync on/off |
 | `vsync.current` | Show current VSync |
-| `screenshot` | Save PNG |
+| `screenshot` | Save a PNG through the active backend |
 | `camera.list` | List cameras |
-| `camera.select <name>` | Switch camera |
+| `camera.select <name\|id>` | Switch camera |
+| `camera.next` / `camera.prev` | Cycle cameras |
 | `camera.spawn <name> [x y z] [yaw] [pitch]` | Create camera |
-| `camera.remove <name>` | Delete camera |
-| `debug.lit` | Normal rendering |
-| `debug.normals` | Visualize normals |
-| `debug.depth` | Visualize depth |
-| `debug.wireframe` | Wireframe overlay |
+| `camera.remove <name\|id>` | Delete camera (the last one cannot be removed) |
+| `camera.rename <name>` | Rename active camera |
+| `camera.info` | Show active camera details |
+| `camera.set <x y z> [yaw] [pitch]` | Move active camera |
 
-Add custom commands in your game:
+Add game commands by overriding `command_help` and `command`:
 
 ```rust
-ctx.commands.register(Command::new(
-    "teleport",
-    "Teleport to coordinates: teleport <x> <y> <z>",
-    |ctx| {
-        let args = ctx.args;
-        if args.len() != 3 { return CommandResult::Err("Usage: teleport <x> <y> <z>".into()); }
-        let pos = Vec3::new(args[0].parse()?, args[1].parse()?, args[2].parse()?);
-        // teleport logic
-        CommandResult::Ok(Some(format!("Teleported to {:?}", pos)))
-    },
-));
+use runtime::{CommandContext, Game};
+
+impl Game for MyGame {
+    // ... config, create_world, update ...
+
+    fn command_help(&self) -> &'static [(&'static str, &'static str)] {
+        &[("teleport", "teleport <x> <y> <z>")]
+    }
+
+    fn command(&mut self, ctx: &mut CommandContext<'_>) -> Option<Result<String, String>> {
+        match ctx.name {
+            "teleport" => {
+                if ctx.args.len() != 3 {
+                    return Some(Err("usage: teleport <x> <y> <z>".into()));
+                }
+                let mut position = [0.0_f32; 3];
+                for (slot, value) in position.iter_mut().zip(ctx.args) {
+                    *slot = match value.parse() {
+                        Ok(value) => value,
+                        Err(_) => return Some(Err("invalid coordinate".into())),
+                    };
+                }
+                if let Some(camera) = ctx.world.active_camera_mut() {
+                    camera.camera.position = runtime::glam::Vec3::from(position);
+                }
+                Some(Ok("teleported".into()))
+            }
+            _ => None,
+        }
+    }
+}
 ```
+
+Game command descriptions are shown by `help`; the engine handles built-in
+commands first.
 
 ---
 
@@ -329,13 +372,13 @@ ctx.commands.register(Command::new(
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `SOLDATIK3D_BACKEND` | `vulkan`, `opengl` | auto | Force graphics backend |
+| `SOLDATIK3D_BACKEND` | `vulkan`/`vk`, `opengl`/`gl` | platform default | Force graphics backend |
 | `SOLDATIK3D_VSYNC` | `on`, `off`, `adaptive`, `mailbox` | `on` | VSync mode |
 | `SOLDATIK3D_MAX_FRAMES` | `<u64>` | none | Auto-exit after N frames |
-| `SOLDATIK3D_COMMANDS` | `"cmd1;cmd2"` | `""` | Startup commands |
-| `SOLDATIK3D_CONSOLE` | `1`, `0` | `0` | Open console at startup |
-| `SOLDATIK3D_DEBUG_VIEW` | `normals`, `depth`, `wireframe` | none | Initial debug view |
-| `SOLDATIK3D_VALIDATION` | `1`, `0` | `0` | Vulkan validation layers |
+| `SOLDATIK3D_COMMANDS` | `"cmd1;cmd2"` | `""` | Startup console commands |
+| `SOLDATIK3D_CONSOLE` | `1`, `true`, `yes`, `on` | off | Open console at startup |
+| `SOLDATIK3D_VALIDATION` | `1`, `true`, `yes`, `on` | on in debug builds | Request Vulkan validation layers |
+| `SOLDATIK3D_DEBUG_VIEW` | `lit`, `normals`, `depth` | `lit` | Demo-only initial debug view |
 
 ---
 
@@ -361,43 +404,59 @@ SOLDATIK3D_VSYNC=off SOLDATIK3D_MAX_FRAMES=100 cargo run --release -p demo
 
 ```bash
 # Windows from Linux (MinGW, OpenGL only)
-./cross_build.sh windows --release
+./scripts/cross_build.sh windows --release
 
 # Android (requires NDK)
 export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-./cross_build.sh android arm64-v8a --release
-./cross_build.sh android armeabi-v7a --release
+./scripts/cross_build.sh android arm64-v8a --release
+./scripts/cross_build.sh android armeabi-v7a --release
 
 # All platforms
-./cross_build.sh all --release
+./scripts/cross_build.sh all --release
 ```
 
 ### Android APK
 
 ```bash
 export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-# Build native libraries + APK
-s3d apk arm64-v8a --release
-s3d apk armeabi-v7a --release
-# Or manually:
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
+
+# Engine demo APK (scripts/apk/gradle is the source of truth used by CI)
+./scripts/apk/build_apk.sh arm64-v8a
+./scripts/apk/build_apk.sh arm64-v8a --release
+
+# From a generated game project, the script is at the project root:
 ./build_apk.sh arm64-v8a --release
+# or:
+s3d apk arm64-v8a --release
 ```
 
-### Export All Platforms
+### Export Artifacts
 
 ```bash
 s3d export --platforms linux,windows,android --out-dir dist
-# Creates:
-# dist/my_game-linux-x86_64.tar.gz
-# dist/my_game-windows-x86_64.zip
-# dist/my_game-android-arm64-v8a.apk
-# dist/my_game-android-armeabi-v7a.apk
+# Writes binaries/libraries directly into dist/:
+#   dist/my_game                 (Linux executable)
+#   dist/my_game.exe             (Windows, requires MinGW)
+#   dist/libmy_game-arm64-v8a.so (Android)
+#   dist/libmy_game-armeabi-v7a.so
 ```
+
+`s3d export` always builds in release mode. Windows and Android exports require
+the corresponding cross toolchains. For a relocatable Linux bundle with
+`libshaderc.so.1` and `libvulkan.so.1`, use
+`./scripts/cross_build.sh linux --release`, which writes
+`dist/linux-x86_64/`.
 
 ### GitHub Actions CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): Runs on every push/PR — Linux, Windows, Android builds, clippy, tests, rustdoc.
-- **Release** (`.github/workflows/release.yml`): Triggers on GitHub Release publish — builds release artifacts for all platforms, builds Android APKs, attaches all artifacts to the release.
+- **CI** (`.github/workflows/ci.yml`): Runs on every push/PR — Linux, Windows, Android builds, clippy, tests, rustdoc, and a debug APK per Android ABI.
+- **Release** (`.github/workflows/release.yml`): Triggers on GitHub Release publish, including prereleases — builds release artifacts for all platforms, builds release APKs, and attaches engine, demo, CLI toolkit and APK files to the release.
+
+The `soldatik3d-cli-*` archive contains `bin/s3d`, `templates/game`, the engine
+`crates/`, `examples/demo` and the workspace manifest. Keep it extracted as a
+directory: generated projects point their `runtime` dependency at its
+`crates/runtime`.
 
 Create a release:
 
@@ -420,36 +479,27 @@ Full documentation in [`docs/`](docs/):
 | **API Reference** | [Runtime](docs/api/runtime.md) • [Rendering](docs/api/rendering.md) • [Scene](docs/api/scene.md) • [Input](docs/api/input.md) • [UI/Console](docs/api/ui.md) • [Assets](docs/api/assets.md) • [Platform](docs/api/platform.md) |
 | **Examples** | [Basic](docs/examples/basic.md) • [Advanced](docs/examples/advanced.md) • [Platform-Specific](docs/examples/platform-specific.md) |
 | **Reference** | [CLI](docs/reference/cli.md) • [Console Commands](docs/reference/cli-commands.md) • [Configuration](docs/reference/configuration.md) • [Changelog](docs/reference/changelog.md) • [Migration](docs/reference/migration.md) |
+| **Project** | [Architecture](docs/ARCHITECTURE.md) • [CI and Releases](docs/CI.md) • [Contributing](CONTRIBUTING.md) |
 
 ---
 
-## Roadmap
+## Known Limitations and Future Work
 
-### v0.2.0 — Audio & Physics
-- [ ] Audio system (rodio integration: music, SFX, spatial audio)
-- [ ] Physics integration (rapier: rigid bodies, colliders, joints)
-- [ ] Animation system (skinned meshes, skeletal animation)
-- [ ] Particle system (GPU compute-based)
-- [ ] Asset hot-reload (dev workflow)
+Current limitations, documented so they are not mistaken for features:
 
-### v0.3.0 — Networking & Scripting
-- [ ] Networking (bevy_net / tokio: client-server, rollback netcode)
-- [ ] Scripting (Lua via mlua: gameplay logic, modding)
-- [ ] Visual scripting / node editor (editor UI)
-- [ ] Advanced post-processing (DOF, motion blur, SSR)
-- [ ] GPU-driven rendering (meshlets, frustum culling)
+- No audio, physics, animation, networking or scripting.
+- No gamepad or touch input API.
+- No runtime mesh, material or texture updates; the scene is uploaded once.
+- No asset manager, virtual filesystem or hot reload.
+- One material per scene, one shadow-casting light, eight point lights.
+- Release APKs are debug-signed unless `SOLDATIK3D_KEYSTORE*` is configured.
+- `s3d engine update`, `s3d engine link` and `s3d apk --sign` are placeholders.
 
-### v0.4.0 — Platform Expansion
-- [ ] macOS (Metal backend)
-- [ ] iOS (Metal backend)
-- [ ] WebGPU backend (wasm target)
-- [ ] Console targets (via middleware)
+Planned work, in no particular order: dynamic geometry and multi-material
+scenes, an asset manager, audio, physics, animation, gamepad/touch input and
+stronger release signing defaults.
 
-### Ongoing
-- [ ] Editor integration (level editor, material editor)
-- [ ] Performance profiling tools (Tracy, custom GPU timers)
-- [ ] More built-in shaders (water, foliage, skin)
-- [ ] Documentation improvements
+**macOS, iOS, WebAssembly and consoles are not supported and are not planned.**
 
 ---
 

@@ -1,338 +1,182 @@
 # Game Loop
 
-Understanding the Soldatik3D game loop and how to structure your game logic.
-
-## The Game Trait
-
-Your game implements the `Game` trait with three methods:
+The runtime owns the event loop, window, renderer and console. A game provides
+three required pieces of behavior through the `Game` trait:
 
 ```rust
-pub trait Game: 'static {
-    /// Engine configuration
+use runtime::{Game, GameConfig, UpdateContext, World};
+
+pub trait Game {
     fn config(&self) -> GameConfig;
-
-    /// Called once at startup - create initial world state
     fn create_world(&mut self) -> World;
-
-    /// Called every frame - main game logic
     fn update(&mut self, ctx: &mut UpdateContext<'_>);
 }
 ```
 
-## Frame Timeline
+Optional methods:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ FRAME N                                                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  1. EVENT PROCESSING                                                │
-│     ┌─────────────────────────────────────────────────────────┐    │
-│     │ winit EventLoop polls OS events                         │    │
-│     │   → WindowEvent::Resized → App::resize()                │    │
-│     │   → WindowEvent::KeyboardInput → Input::press/release  │    │
-│     │   → WindowEvent::MouseInput → Input::press/release     │    │
-│     │   → WindowEvent::CursorMoved → Input::mouse_move       │    │
-│     │   → DeviceEvent::MouseMotion → Input::mouse_delta      │    │
-│     │   → Event::AboutToWait → Request redraw                │    │
-│     └─────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  2. GAME UPDATE (Your Code)                                         │
-│     ┌─────────────────────────────────────────────────────────┐    │
-│     │ Game::update(&mut UpdateContext)                        │    │
-│     │   Input available: ctx.input                            │    │
-│     │   World mutable: ctx.world                              │    │
-│     │   Renderer control: ctx.renderer                        │    │
-│     │   Console: ctx.console                                  │    │
-│     │   Commands: ctx.commands                                │    │
-│     │   Time: ctx.time, ctx.dt                                │    │
-│     └─────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  3. RENDERING                                                       │
-│     ┌─────────────────────────────────────────────────────────┐    │
-│     │ Renderer::render(&FrameData)                            │    │
-│     │   Shadow map pass                                       │    │
-│     │   HDR scene pass                                        │    │
-│     │   SSAO (half-res)                                       │    │
-│     │   Bloom (half-res)                                      │    │
-│     │   Composite + Tone mapping + Gamma                      │    │
-│     │   UI overlay                                            │    │
-│     │   Present / Swap                                        │    │
-│     └─────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  4. FRAME END                                                       │
-│     • Swap buffers                                              │    │
-│     • Update timing (dt calculation)                            │    │
-│     • Check exit conditions                                     │    │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| Method | Purpose |
+|--------|---------|
+| `debug_view(&self) -> DebugView` | Lit, normals or depth visualization |
+| `input_map(&self) -> InputMap` | Named keyboard action bindings |
+| `command_help(&self) -> &'static [(&str, &str)]` | Commands shown by `help` |
+| `command(&mut self, ctx: &mut CommandContext<'_>)` | Handle game console commands |
 
-## UpdateContext - Your Frame Interface
+## Lifecycle
+
+1. `runtime::run(game)` creates a `winit` event loop and the engine `App`.
+2. On `resumed`, the engine creates the window, builds `WindowSurface`, asks the
+   game for `GameConfig`, and creates the renderer.
+3. `game.create_world()` is called once. The `Scene` part of the world is
+   uploaded to GPU resources and remains immutable for the renderer lifetime.
+4. Every frame:
+   - input events are collected,
+   - `UpdateContext` is constructed,
+   - `game.update(ctx)` runs,
+   - the console consumes text input if it is open,
+   - the UI draw list is uploaded and the frame is rendered,
+   - frame statistics are recorded.
+5. On window close, the renderer is idled and dropped before the window.
+
+On Android, `run_android(game, android_app)` does the same, but builds the event
+loop with the `AndroidApp` supplied by `android-activity`.
+
+## UpdateContext
 
 ```rust
 pub struct UpdateContext<'a> {
-    /// Game time in seconds since start
-    pub time: f32,
-    /// Delta time since last frame
     pub dt: f32,
-    /// Unified input state
     pub input: &'a Input,
-    /// Mutable world access
+    pub ui: &'a mut UiDrawList,
+    pub stats: RenderStats,
+    pub viewport: (u32, u32),
     pub world: &'a mut World,
-    /// Renderer control
-    pub renderer: &'a mut dyn Renderer,
-    /// Console for output/commands
-    pub console: &'a mut Console,
-    /// Command registry
-    pub commands: &'a CommandRegistry,
+    pub console_open: bool,
 }
 ```
 
-## Common Patterns
+- `dt` is the time since the previous frame in seconds, clamped to avoid huge
+  steps after suspend.
+- `input` is a snapshot for this frame. Held keys are persistent; `pressed`
+  states, mouse delta, scroll and clicks reset at the start of the next frame.
+- `ui` is cleared before `update` and rendered after the game and console.
+- `stats` describes the **previous** rendered frame.
+- `viewport` is the framebuffer size in physical pixels.
+- `console_open` lets gameplay suspend controls while the console is open.
 
-### Time-Based Movement
+## Scene ownership
+
+`World` combines a `Scene` with a `CameraRig`:
+
+```rust
+fn create_world(&mut self) -> World {
+    let scene = Scene::new(Material::default())
+        .with_meshes(load_level())
+        .with_lights(load_lights())
+        .with_primary_light(PrimaryLight::default());
+
+    let mut cameras = CameraRig::empty();
+    cameras.spawn("player", Camera::at(Vec3::new(0.0, 2.0, 8.0)));
+    World::with_cameras(scene, cameras)
+}
+```
+
+The renderer uploads meshes and the material once. The camera is per-frame data,
+so you can spawn, select, move and remove cameras without rebuilding GPU
+resources. `ctx.world.scene_mut()` allows gameplay to read or modify scene data,
+but geometry changes are not re-uploaded automatically; rebuild the world only
+by recreating the game/renderer.
+
+## A frame in practice
 
 ```rust
 fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    let dt = ctx.dt; // Always use dt for frame-rate independent movement
-    
-    const SPEED: f32 = 5.0;
-    if ctx.input.is_key_pressed(KeyCode::W) {
-        player.pos.z -= SPEED * dt;
+    self.time += ctx.dt;
+
+    if ctx.input.action_down("sprint") {
+        self.speed = 8.0;
+    } else {
+        self.speed = 4.0;
     }
+
+    let movement = ctx.input.action_down("forward") as i32 as f32
+        - ctx.input.action_down("backward") as i32 as f32;
+    if let Some(camera) = ctx.world.active_camera_mut() {
+        camera.camera.position += camera.camera.forward_flat() * movement * self.speed * ctx.dt;
+    }
+
+    ctx.ui.text("F1: console", 20.0, 20.0, 1.2, [1.0; 4]);
 }
 ```
 
-### Fixed Timestep (Physics)
+Camera movement is gameplay code. `Camera` only provides `forward`,
+`forward_flat`, `right_flat`, view/projection matrices and the yaw/pitch fields.
+
+## Input timing
+
+| Method | Meaning |
+|--------|---------|
+| `key_down(code)` | Key is currently held |
+| `key_pressed(code)` | Key transitioned to pressed during this frame |
+| `action_down(name)` | Any key bound to the action is held |
+| `action_pressed(name)` | Any bound key was pressed this frame |
+| `mouse_delta()` | Raw motion while the cursor is captured |
+| `scroll_delta()` | Scroll ticks this frame |
+| `primary_clicked()` | Left click this frame |
+
+`InputMap` is applied once at startup. Rebindable controls are not implemented;
+rebuild the game to change bindings.
+
+## Console integration
+
+Pressing `F1` or `` ` `` toggles the console. While it is open, text input is
+routed to the console, the cursor is released, and `ctx.console_open` is true.
+Built-in commands are handled by the engine; unknown commands are passed to
+`Game::command`.
 
 ```rust
-const PHYSICS_DT: f32 = 1.0 / 60.0;
-const MAX_SUBSTEPS: u32 = 5;
+fn command_help(&self) -> &'static [(&'static str, &'static str)] {
+    &[("spawn_enemy", "spawn_enemy <x> <z>")]
+}
 
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    self.accumulator += ctx.dt;
-    
-    let mut steps = 0;
-    while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
-        self.physics_step(PHYSICS_DT);
-        self.accumulator -= PHYSICS_DT;
-        steps += 1;
+fn command(&mut self, ctx: &mut CommandContext<'_>) -> Option<Result<String, String>> {
+    if ctx.name != "spawn_enemy" {
+        return None;
     }
-    
-    // Interpolate for rendering
-    let alpha = self.accumulator / PHYSICS_DT;
-    self.interpolate_render_state(alpha);
-}
-```
-
-### Input Handling
-
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    let input = ctx.input;
-    
-    // Continuous (held)
-    if input.is_key_pressed(KeyCode::W) { ... }
-    if input.is_mouse_button_pressed(MouseButton::Left) { ... }
-    
-    // Single-frame (just pressed/released)
-    if input.is_key_just_pressed(KeyCode::Space) { jump(); }
-    if input.is_key_just_released(KeyCode::E) { interact(); }
-    
-    // Mouse
-    let mouse_pos = input.mouse_position();
-    let mouse_delta = input.mouse_delta(); // For camera rotation
-    
-    // Gamepad
-    if let Some(pad) = input.gamepad(0) {
-        let stick = pad.axis(GamepadAxis::LeftStickX);
-        if stick.abs() > 0.1 { move_x(stick); }
+    if ctx.args.len() != 2 {
+        return Some(Err("usage: spawn_enemy <x> <z>".into()));
     }
+    let x: f32 = match ctx.args[0].parse() {
+        Ok(value) => value,
+        Err(_) => return Some(Err("invalid x".into())),
+    };
+    let z: f32 = match ctx.args[1].parse() {
+        Ok(value) => value,
+        Err(_) => return Some(Err("invalid z".into())),
+    };
+    self.enemies.push([x, z]);
+    Some(Ok(format!("spawned enemy at {x}, {z}")))
 }
 ```
 
-### World Mutation
+## Frame budget and shutdown
 
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    // Spawn entity
-    let entity = ctx.world.spawn_mesh(mesh, transform, material);
-    
-    // Modify existing
-    if let Some(entity) = ctx.world.entity_mut(entity_id) {
-        entity.transform.translation += velocity * ctx.dt;
-        entity.visible = true;
-    }
-    
-    // Query
-    for entity in ctx.world.entities_with::<Transform>() {
-        // ...
-    }
-    
-    // Camera
-    if let Some(cam) = ctx.world.active_camera_mut() {
-        cam.position = player_pos + Vec3::Y * 1.7;
-    }
-}
-```
-
-### Renderer Control
-
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    let renderer = ctx.renderer;
-    
-    // Debug views
-    renderer.set_debug_view(DebugView::Normals);
-    renderer.set_debug_view(DebugView::Depth);
-    renderer.set_debug_view(DebugView::Wireframe);
-    renderer.set_debug_view(DebugView::Lit); // Default
-    
-    // VSync
-    renderer.set_vsync(VsyncMode::On);
-    renderer.set_vsync(VsyncMode::Off);
-    renderer.set_vsync(VsyncMode::Adaptive);
-    renderer.set_vsync(VsyncMode::Mailbox);
-    
-    // Screenshot
-    renderer.screenshot(); // Deferred to next frame
-    
-    // Stats
-    let stats = renderer.stats();
-    println!("FPS: {:.1}", 1.0 / ctx.dt);
-}
-```
-
-### Console & Commands
-
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    // Print to console
-    ctx.console.print("Hello");
-    ctx.console.error("Error!");
-    ctx.console.warning("Warning");
-    
-    // Execute command programmatically
-    ctx.commands.execute("screenshot");
-    ctx.commands.execute("vsync.off");
-    
-    // Register custom command (usually in create_world or first update)
-    ctx.commands.register(Command::new(
-        "heal",
-        "Restore health",
-        |ctx| {
-            // Access game state via context
-            CommandResult::Ok(None)
-        },
-    ));
-}
-```
-
-## Frame Timing
-
-### Delta Time Calculation
-
-```rust
-// In App::run()
-let mut last_frame = Instant::now();
-loop {
-    let now = Instant::now();
-    let dt = (now - last_frame).as_secs_f32();
-    last_frame = now;
-    
-    // Clamp to prevent spiral of death
-    let dt = dt.min(0.1);
-    
-    ctx.dt = dt;
-    ctx.time += dt;
-}
-```
-
-### Frame Budget (Auto-Exit)
+`SOLDATIK3D_MAX_FRAMES=N` exits after N rendered frames. It is intended for
+smoke tests and benchmarks:
 
 ```bash
-# Exit after N frames (for CI/benchmarking)
-SOLDATIK3D_MAX_FRAMES=100 cargo run
+SOLDATIK3D_VSYNC=off SOLDATIK3D_MAX_FRAMES=100 cargo run --release -p demo
 ```
 
-```rust
-// In App - checked after each frame
-if let Some(max_frames) = self.frame_budget {
-    if self.frames_rendered >= max_frames {
-        self.exit_requested = true;
-    }
-}
+`Esc` closes the console, then releases the cursor, then exits the application.
+`Tab` toggles cursor capture.
+
+## Vulkan validation
+
+Desktop Vulkan builds can enable validation layers:
+
+```bash
+SOLDATIK3D_VALIDATION=1 cargo run -p demo
 ```
 
-## VSync Modes
-
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| `On` (Default) | Wait for vblank | Normal gameplay |
-| `Off` | Immediate present | Benchmarking, max FPS |
-| `Adaptive` | VSync when >60fps, off when <60fps | Variable framerate |
-| `Mailbox` | Triple buffering, latest frame | Low latency, no tearing |
-
-```rust
-// In Game::config
-GameConfig::default().with_vsync(true) // Uses VsyncMode::On
-
-// Or change at runtime
-ctx.renderer.set_vsync(VsyncMode::Mailbox)?;
-```
-
-## Multi-Threading Considerations
-
-### What Runs on Main Thread
-
-- `Game::update()` - Your logic
-- `Renderer::render()` - Draw calls
-- `winit` event loop
-- Console/UI rendering
-
-### What Can Be Offloaded
-
-- Asset loading (use `rayon` or `tokio`)
-- Physics simulation (separate thread)
-- Pathfinding/AI
-- Audio mixing
-
-```rust
-// Example: Async asset loading
-use std::sync::{Arc, Mutex};
-
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    if self.loading {
-        if let Ok(asset) = self.load_handle.try_recv() {
-            self.assets.push(asset);
-            self.loading = false;
-        }
-    } else if ctx.input.is_key_just_pressed(KeyCode::L) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.load_handle = rx;
-        std::thread::spawn(move || {
-            let asset = heavy_load();
-            tx.send(asset).unwrap();
-        });
-        self.loading = true;
-    }
-}
-```
-
-## Best Practices
-
-1. **Always use `dt`** for movement/animation
-2. **Separate physics** from rendering with fixed timestep
-3. **Minimize allocations** in `update()` - reuse buffers
-4. **Batch world queries** - avoid repeated `entity_mut()` calls
-5. **Use `just_pressed`** for one-time actions (jump, shoot)
-6. **Profile with `SOLDATIK3D_MAX_FRAMES`** and `cargo flamegraph`
-7. **Handle resize** - renderer does this automatically
-
----
-
-*See [Runtime API](api/runtime.md) for complete `UpdateContext` documentation.*
+Validation is a Vulkan feature; the OpenGL backend ignores it.

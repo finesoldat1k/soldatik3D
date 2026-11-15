@@ -1,18 +1,19 @@
-# Cargo configuration for Soldatik3D game projects
+# Cargo configuration for Soldatik3D game projects.
 #
-# This file provides cross-compilation settings for all supported platforms.
-# Copy this to your game project's .cargo/config.toml and adjust paths as needed.
+# This file intentionally does not force a linker: the defaults work on a
+# normal Rust toolchain. Android linkers are supplied by build_apk.sh (or by
+# CI) through CARGO_TARGET_<TRIPLE>_LINKER and CC_<TRIPLE> variables.
 
 [net]
 git-fetch-with-cli = true
 
-# Debug profile - optimized for development with symbols
+# Debug profile - optimized for development with symbols.
 [profile.dev]
 opt-level = 3
 debug = true
 split-debuginfo = "unpacked"
 
-# Release profile - maximum optimization
+# Release profile - maximum optimization.
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -20,57 +21,10 @@ codegen-units = 1
 strip = "debuginfo"
 debug = false
 
-# =============================================================================
-# LINUX TARGETS
-# =============================================================================
-
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-[target.x86_64-unknown-linux-musl]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-feature=+crt-static"]
-
-# =============================================================================
-# WINDOWS TARGETS (Cross-compilation from Linux)
-# =============================================================================
-
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-gcc-ar"
-runner = "wine64"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=lld",
-  "-C", "link-arg=-static",
-]
-
-[target.x86_64-pc-windows-msvc]
-# Requires Windows host or cross with llvm-mingw
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-# =============================================================================
-# ANDROID TARGETS
-# =============================================================================
-# Android linkers are typically set via environment variables:
-# CARGO_TARGET_<TRIPLE>_LINKER, CC_<TRIPLE>, AR_<TRIPLE>
-# The build.rs script handles this automatically if ANDROID_NDK_HOME is set.
+# Android targets:
+#   rustup target add aarch64-linux-android armv7-linux-androideabi
+#   export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
 #
-# Example manual setup:
-# [target.aarch64-linux-android]
-# linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-# ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-#
-# [target.armv7-linux-androideabi]
-# linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi29-clang"
-# ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-#
-# [target.x86_64-linux-android]
-# linker = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang"
-# ar = "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-# =============================================================================
-# DEPENDENCY OVERRIDES (Uncomment if needed)
-# =============================================================================
-# [patch.crates-io]
-# soldatik3d = { path = "/path/to/soldatik3d" }
+# Windows builds:
+#   Native MSVC builds work with the default toolchain. Cross-compiling from
+#   Linux to Windows requires the x86_64-pc-windows-gnu target and MinGW-w64.

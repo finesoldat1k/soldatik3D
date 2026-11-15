@@ -1,0 +1,9 @@
+# Keep scripts LF-only so bash, Gradle and CI see identical bytes on every host.
+* text=auto
+*.sh text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary

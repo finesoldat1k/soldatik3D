@@ -1,311 +1,170 @@
-# Console Commands Reference
+# Console Commands
 
-Complete list of all built-in console commands available at runtime.
+The developer console is part of the runtime. Toggle it with `F1` or `` ` ``.
+While it is open the cursor is released, text input goes to the console, and
+`UpdateContext::console_open` is `true`.
 
-## Opening the Console
+Features:
 
-- Press `` ` `` (backtick/tilde key) to toggle console
-- Or set `SOLDATIK3D_CONSOLE=1` to open at startup
-- Or call `ctx.console.set_visible(true)` from code
+- `Enter` executes the current line,
+- `↑` / `↓` browse history,
+- `Tab` completes command names and cycles matches,
+- `Esc` closes the console,
+- output keeps the last 200 lines and displays the last 12.
 
-## Command Syntax
+Type `help` for the built-in list. Game commands registered through
+`Game::command_help` are shown too.
 
-```
-command [arguments...]
-```
+## Built-in commands
 
-- Commands are case-insensitive
-- Arguments separated by spaces
-- Quoted strings support spaces: `spawn "my entity" 0 0 0`
+### Session
 
-## Built-in Commands
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `help` | — | List commands |
+| `clear` | — | Clear console history |
+| `quit` | — | Request shutdown |
+| `exit` | — | Alias for `quit` |
+| `backend` | — | Print the active backend **and the env variable hint**; it does not switch backends |
+| `screenshot` | — | Save `screenshot_<seconds>.png` in the working directory |
 
-### Help & Info
-
-| Command | Description |
-|---------|-------------|
-| `help` | List all available commands |
-| `help <command>` | Show help for specific command |
-| `version` | Show engine version |
-| `info` | Show system/engine info |
-
-### Engine Control
-
-| Command | Description |
-|---------|-------------|
-| `quit` / `exit` | Exit the game cleanly |
-| `restart` | Restart the game (reload world) |
-
-### Graphics Backend
+### VSync
 
 | Command | Description |
 |---------|-------------|
-| `backend` | Show current graphics backend |
-| `backend vulkan` | Switch to Vulkan backend |
-| `backend opengl` | Switch to OpenGL backend |
-| `backend auto` | Auto-select best backend |
+| `vsync.on` | Wait for vertical blank |
+| `vsync.off` | Present immediately; may tear |
+| `vsync.adaptive` | Wait when on time, present immediately when late |
+| `vsync.mailbox` | Triple buffering; Vulkan only |
+| `vsync.toggle` | Toggle between `On` and `Off` |
+| `vsync.current` | Print the current mode |
 
-### VSync Control
+`vsync.mailbox` on OpenGL falls back to `On`.
 
-| Command | Description |
-|---------|-------------|
-| `vsync.on` | Enable VSync (wait for vblank) |
-| `vsync.off` | Disable VSync (immediate present) |
-| `vsync.adaptive` | Adaptive VSync (sync when > refresh rate) |
-| `vsync.mailbox` | Mailbox mode (triple buffering, latest frame) |
-| `vsync.toggle` | Toggle between On/Off |
-| `vsync.current` | Show current VSync mode |
+### Cameras
 
-**VSync Modes:**
-| Mode | Behavior | Best For |
-|------|----------|----------|
-| `on` | Wait for vblank | Normal gameplay |
-| `off` | Immediate present | Benchmarking, max FPS |
-| `adaptive` | Sync when > 60fps | Variable framerate |
-| `mailbox` | Triple buffer, latest frame | Low latency, no tearing |
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `camera.list` | — | List cameras; active one is marked |
+| `camera.select` | `<name\|id>` | Select a camera |
+| `camera.next` | — | Select the next camera in insertion order |
+| `camera.prev` | — | Select the previous camera |
+| `camera.previous` | — | Alias for `camera.prev` |
+| `camera.spawn` | `<name> [x y z] [yaw] [pitch]` | Spawn a camera; without a position it copies the active camera |
+| `camera.remove` | `<name\|id>` | Remove a camera; the last remaining camera cannot be removed |
+| `camera.rename` | `<name>` | Rename the active camera |
+| `camera.info` | — | Print position, yaw, pitch, FOV and clip range |
+| `camera.set` | `<x y z> [yaw] [pitch]` | Move the active camera |
 
-### Debug Visualization
+Angles for `camera.spawn` and `camera.set` are in degrees. Positions are floats.
+Camera IDs are the numbers shown by `camera.list`.
 
-| Command | Description |
-|---------|-------------|
-| `debug.lit` | Normal lit rendering (default) |
-| `debug.normals` | Visualize normals (RGB = XYZ) |
-| `debug.depth` | Visualize depth (linearized) |
-| `debug.wireframe` | Wireframe overlay |
-| `debug.shadow` | Visualize shadow map |
-
-**Debug Views:**
-| View | Visualization | Use Case |
-|------|---------------|----------|
-| `lit` | Normal PBR shading | Normal gameplay |
-| `normals` | Red=X, Green=Y, Blue=Z | Normal mapping issues |
-| `depth` | White=near, Black=far | Depth precision, z-fighting |
-| `wireframe` | Triangle edges | Geometry complexity, LOD |
-| `shadow` | Shadow map depth | Shadow acne, peter-panning |
-
-### Screenshot
-
-| Command | Description |
-|---------|-------------|
-| `screenshot` | Save current frame as PNG |
-| `screenshot <filename>` | Save with custom name |
-
-**Output:** `screenshot_<timestamp>.png` in working directory
-
-### Camera Commands
-
-| Command | Description |
-|---------|-------------|
-| `camera.list` | List all cameras |
-| `camera.select <name>` | Switch active camera |
-| `camera.select <id>` | Switch by CameraId |
-| `camera.next` | Select next camera |
-| `camera.prev` / `camera.previous` | Select previous camera |
-| `camera.spawn <name> [x y z] [yaw] [pitch]` | Create new camera |
-| `camera.remove <name>` | Delete camera |
-| `camera.info` | Show active camera details |
-
-**Examples:**
-```
-camera.list
-camera.select main
-camera.spawn overhead 0 50 0 -1.57 0
-camera.spawn player_cam 0 2 5 0 0
-camera.remove old_camera
+```text
+camera.spawn overview 0 20 20 -90 -35
+camera.select overview
+camera.set 0 25 25 -90 -40
+camera.info
+camera.remove 1
 ```
 
-### Entity Commands (If Enabled)
+## Command execution order
 
-| Command | Description |
-|---------|-------------|
-| `entity.list` | List all entities |
-| `entity.spawn <type> [x y z]` | Spawn entity |
-| `entity.remove <id>` | Remove entity |
-| `entity.select <id>` | Select entity for editing |
-| `entity.move <id> <x> <y> <z>` | Move entity |
-| `entity.rotate <id> <x> <y> <z>` | Rotate entity |
-| `entity.scale <id> <x> <y> <z>` | Scale entity |
+1. The console parses the line into a command name and whitespace-separated
+   arguments.
+2. Built-in commands are looked up first.
+3. If no built-in matches, `Game::command` is called with the name, arguments
+   and `&mut World`.
+4. If the game returns `None`, the console prints `unknown command`.
 
-### Light Commands
+Game commands cannot override built-in names.
 
-| Command | Description |
-|---------|-------------|
-| `light.list` | List all lights |
-| `light.add directional [x y z] [r g b] [intensity]` | Add directional light |
-| `light.add point [x y z] [r g b] [intensity] [range]` | Add point light |
-| `light.add spot [x y z] [dir] [r g b] [intensity] [range] [inner] [outer]` | Add spot light |
-| `light.remove <id>` | Remove light |
-| `light.shadows on\|off <id>` | Toggle shadows |
+## Adding game commands
 
-### Physics Commands (If Enabled)
-
-| Command | Description |
-|---------|-------------|
-| `physics.gravity <x> <y> <z>` | Set gravity |
-| `physics.debug on\|off` | Toggle physics debug draw |
-
-### Audio Commands (If Enabled)
-
-| Command | Description |
-|---------|-------------|
-| `audio.volume <0-1>` | Set master volume |
-| `audio.mute on\|off` | Toggle mute |
-| `audio.play <sound> [volume]` | Play sound effect |
-
-### UI Commands
-
-| Command | Description |
-|---------|-------------|
-| `ui.show <panel>` | Show UI panel |
-| `ui.hide <panel>` | Hide UI panel |
-| `ui.scale <factor>` | Set UI scale |
-
-### Development Commands
-
-| Command | Description |
-|---------|-------------|
-| `reload` | Reload shaders/assets |
-| `profile start\|stop\|frame` | Profiling control |
-| `mem` | Show memory usage |
-| `gc` | Force garbage collection (if applicable) |
-
----
-
-## Command Aliases
-
-| Alias | Full Command |
-|-------|--------------|
-| `q` | `quit` |
-| `x` | `exit` |
-| `b` | `backend` |
-| `v` | `vsync` |
-| `d` | `debug` |
-| `cam` | `camera` |
-| `ent` | `entity` |
-| `lt` | `light` |
-| `ss` | `screenshot` |
-| `h` | `help` |
-
----
-
-## Startup Commands
-
-Run commands automatically at startup:
-
-```bash
-# Environment variable
-SOLDATIK3D_COMMANDS="vsync.off;debug.wireframe;camera.spawn top 0 10 0" cargo run
-
-# GameConfig
-GameConfig::default()
-    .with_startup_commands(vec![
-        "vsync.off".into(),
-        "debug.normals".into(),
-        "camera.spawn overview 0 10 0".into(),
-    ])
-```
-
----
-
-## Custom Commands
-
-Register your own commands from game code:
+Declare the help text and handle the command:
 
 ```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    ctx.commands.register(Command::new(
-        "mycmd",
-        "Description here",
-        |ctx| {
-            ctx.console.print("Custom command executed!");
-            CommandResult::Ok(None)
-        },
-    ));
-    
-    // With arguments
-    ctx.commands.register(Command::new(
-        "teleport",
-        "Teleport to coordinates: teleport <x> <y> <z>",
-        |ctx| {
-            let args = ctx.args;
-            if args.len() != 3 {
-                return CommandResult::Err("Usage: teleport <x> <y> <z>".into());
+use runtime::{CommandContext, Game};
+
+impl Game for MyGame {
+    // ...
+
+    fn command_help(&self) -> &'static [(&'static str, &'static str)] {
+        &[
+            ("teleport", "teleport <x> <y> <z>"),
+            ("spawn", "spawn <x> <z>"),
+        ]
+    }
+
+    fn command(&mut self, ctx: &mut CommandContext<'_>) -> Option<Result<String, String>> {
+        match ctx.name {
+            "teleport" => {
+                if ctx.args.len() != 3 {
+                    return Some(Err("usage: teleport <x> <y> <z>".into()));
+                }
+                let mut values = [0.0_f32; 3];
+                for (slot, argument) in values.iter_mut().zip(ctx.args) {
+                    *slot = match argument.parse() {
+                        Ok(value) => value,
+                        Err(_) => return Some(Err("invalid coordinate".into())),
+                    };
+                }
+                if let Some(camera) = ctx.world.active_camera_mut() {
+                    camera.camera.position = runtime::glam::Vec3::from(values);
+                }
+                Some(Ok(format!("teleported to {} {} {}", values[0], values[1], values[2])))
             }
-            let pos = Vec3::new(
-                args[0].parse()?,
-                args[1].parse()?,
-                args[2].parse()?,
-            );
-            // Teleport logic
-            CommandResult::Ok(Some(format!("Teleported to {:?}", pos)))
-        },
-    ));
+            "spawn" => {
+                if ctx.args.len() != 2 {
+                    return Some(Err("usage: spawn <x> <z>".into()));
+                }
+                Some(Ok("spawned".into()))
+            }
+            _ => None,
+        }
+    }
 }
 ```
 
----
+`CommandContext` exposes only `name`, `args` and `world`. Game state is available
+through `&mut self`; renderer handles are not exposed.
 
-## Tab Completion
+## Startup commands
 
-- Press `Tab` to autocomplete command names
-- Press `Tab` twice to show all completions
-- Works for command names and enum arguments (e.g., `backend vulkan|opengl`)
+`SOLDATIK3D_COMMANDS` executes commands at startup, separated by semicolons:
 
----
-
-## History Navigation
-
-- `Up` / `Down` arrows: Navigate command history
-- `Ctrl+R`: Reverse search history (if implemented)
-- History persists during session
-
----
-
-## Console Settings
-
-```rust
-// In GameConfig
-GameConfig::default()
-    .with_open_console(true)  // Open at startup
-
-// Runtime
-ctx.console.set_visible(true);
-ctx.console.clear();
-ctx.console.set_max_history(1000);
+```bash
+SOLDATIK3D_COMMANDS="camera.spawn overview 0 20 20 -90 -35;camera.select overview" \
+  cargo run -p demo
 ```
 
----
+Commands run after the world and renderer exist. An invalid command prints an
+error but does not stop the game. This is useful for screenshots and smoke
+tests:
 
-## Command Output Format
-
+```bash
+SOLDATIK3D_BACKEND=opengl \
+SOLDATIK3D_VSYNC=off \
+SOLDATIK3D_MAX_FRAMES=3 \
+SOLDATIK3D_COMMANDS="screenshot" \
+cargo run -p demo
 ```
-[12:34:56] [INFO] Message
-[12:34:56] [WARN] Warning message
-[12:34:56] [ERROR] Error message
-[12:34:56] [CMD] > command args
-[12:34:56] [OK] Command output
-[12:34:56] [ERR] Command error
-```
 
----
+`SOLDATIK3D_CONSOLE=1` (also `true`, `yes`, `on`) opens the console at startup.
 
-## Troubleshooting
+## Keys
 
-### Console Won't Open
-- Check `` ` `` key binding (may conflict with OS)
-- Try `SOLDATIK3D_CONSOLE=1` environment variable
-- Call `ctx.console.set_visible(true)` in first `update()`
+| Key | Action |
+|-----|--------|
+| `F1` / `` ` `` | Toggle console |
+| `Enter` | Execute |
+| `Backspace` | Delete |
+| `↑` / `↓` | History |
+| `Tab` | Complete / cycle matches |
+| `Esc` | Close console |
+| `F12` | Engine screenshot, console open or not |
 
-### Command Not Found
-- Check spelling (case-insensitive)
-- Run `help` to see all commands
-- Custom commands must be registered in `update()` or `create_world()`
+## Related
 
-### Command Errors
-- Run `help <command>` for usage
-- Check argument count and types
-- Arguments with spaces need quotes: `spawn "my entity" 0 0 0`
-
----
-
-*See [CLI Tool](cli.md) for `soldatik3d` command-line tool, or [Runtime API](api/runtime.md) for `CommandRegistry` API.*
+- [Configuration](configuration.md)
+- [UI API](../api/ui.md)
+- [Game loop](../guides/game-loop.md)

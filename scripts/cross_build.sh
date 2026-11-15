@@ -1,13 +1,13 @@
-                                                        й#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Build the Soldatik3D engine and the demo game for the supported platforms.
 #
 # Usage:
-#   ./cross_build.sh linux   [--release]
-#   ./cross_build.sh windows [--release]              # MinGW cross-compile
-#   ./cross_build.sh android [abi] [--release]        # NDK required
-#   ./cross_build.sh all     [--release]
+#   ./scripts/cross_build.sh linux   [--release]
+#   ./scripts/cross_build.sh windows [--release]              # MinGW cross-compile
+#   ./scripts/cross_build.sh android [abi] [--release]        # NDK required
+#   ./scripts/cross_build.sh all     [--release]
 #
-# Android ABIs: arm64-v8a (default), armeabi-v7a, x86_64, all.
+# Android ABIs: arm64-v8a, armeabi-v7a, x86_64, or all (default).
 #
 # GitHub Actions is the canonical build environment (see .github/workflows).
 # This script is a local convenience wrapper and intentionally builds the
@@ -20,10 +20,12 @@ set -euo pipefail
 export CMAKE_POLICY_VERSION_MINIMUM="${CMAKE_POLICY_VERSION_MINIMUM:-3.5}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
 
 log() { printf '\033[1;34m[build]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[build]\033[0m %s\n' "$*" >&2; }
+err() { printf '\033[1;31m[build]\033[0m %s\n' "$*" >&2; }
 
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
@@ -39,19 +41,17 @@ while [[ $# -gt 0 ]]; do
         --release) RELEASE=true ;;
         arm64-v8a | armeabi-v7a | x86_64 | all) ABI="$1" ;;
         *)
-            echo "unknown argument: $1" >&2
+            err "unknown argument: $1"
             exit 2
             ;;
     esac
     shift
 done
 
-PROFILE="dev"
-BUILD_DIR="debug"
+PROFILE="debug"
 PROFILE_ARGS=()
 if [[ "$RELEASE" == true ]]; then
     PROFILE="release"
-    BUILD_DIR="release"
     PROFILE_ARGS=(--release)
 fi
 
@@ -61,10 +61,10 @@ build_engine_and_demo() {
     shift 2
 
     local target_args=()
-    local out="target/${BUILD_DIR}"
+    local out="target/${PROFILE}"
     if [[ -n "$target" ]]; then
         target_args=(--target "$target")
-        out="target/${target}/${BUILD_DIR}"
+        out="target/${target}/${PROFILE}"
     fi
 
     # The output directory is generated; clear it so a previous target/profile
@@ -89,22 +89,65 @@ build_engine_and_demo() {
     else
         cp "$out/demo" "$out_dir/"
     fi
+
+    # Ship the CLI with desktop packages. Cross-target packages get a native
+    # executable for that target, not the host binary.
+    if [[ "$target" != *android* ]]; then
+        log "tool -> s3d"
+        if [[ -n "$target" ]]; then
+            cargo build --locked -p s3d "${PROFILE_ARGS[@]}" --target "$target"
+            cp "target/${target}/${PROFILE}/s3d.exe" "$out_dir/"
+        else
+            cargo build --locked -p s3d "${PROFILE_ARGS[@]}"
+            cp "target/${PROFILE}/s3d" "$out_dir/"
+        fi
+    fi
+
     log "artifacts -> $out_dir"
 }
 
+copy_shared_library() {
+    local destination="$1"
+    local name="$2"
+    shift 2
+    for candidate in "$@"; do
+        if [[ -e "$candidate" ]]; then
+            cp -L "$candidate" "$destination/$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
 build_linux() {
+    # Bundle the demo's shared-library dependencies next to the executable and
+    # set $ORIGIN rpath so the package is relocatable.
+    local saved_rustflags="${RUSTFLAGS-}"
+    export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN -C link-arg=-Wl,--enable-new-dtags"
     build_engine_and_demo "dist/linux-x86_64" "" --all-features
-    # Copy required shared libraries for portable distribution
+    if [[ -n "$saved_rustflags" ]]; then
+        export RUSTFLAGS="$saved_rustflags"
+    else
+        unset RUSTFLAGS
+    fi
+
     local out_dir="dist/linux-x86_64"
-    cp /usr/lib/x86_64-linux-gnu/libshaderc.so.1 "$out_dir/" 2>/dev/null || \
-      cp /usr/lib/libshaderc.so.1 "$out_dir/" 2>/dev/null || true
-    cp /usr/lib/x86_64-linux-gnu/libvulkan.so.1 "$out_dir/" 2>/dev/null || true
+    copy_shared_library "$out_dir" "libshaderc.so.1" \
+        /usr/lib/x86_64-linux-gnu/libshaderc.so.1 \
+        /usr/lib/libshaderc.so.1 \
+        /usr/lib/x86_64-linux-gnu/libshaderc_shared.so.1 \
+        /usr/lib/libshaderc_shared.so.1 || \
+        warn "libshaderc not found; the demo may need a system shaderc at runtime"
+    copy_shared_library "$out_dir" "libvulkan.so.1" \
+        /usr/lib/x86_64-linux-gnu/libvulkan.so.1 \
+        /usr/lib/libvulkan.so.1 || \
+        warn "libvulkan not found; the demo will need a system Vulkan loader"
     log "Copied shared libraries to $out_dir"
 }
 
 build_windows() {
     if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-        echo "MinGW-w64 is required. Install it with: sudo apt-get install mingw-w64" >&2
+        err "MinGW-w64 is required. Install it with: sudo apt-get install mingw-w64"
         exit 1
     fi
     export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}"
@@ -118,12 +161,25 @@ build_windows() {
 android_linker() {
     local target="$1"
     local api="29"
-    local ndk_bin="${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point at an Android NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    local host_tag
+    case "$(uname -s)" in
+        Linux*) host_tag="linux-x86_64" ;;
+        Darwin*) host_tag="darwin-x86_64" ;;
+        MINGW* | MSYS* | CYGWIN*) host_tag="windows-x86_64" ;;
+        *)
+            err "Unsupported host OS: $(uname -s)"
+            exit 1
+            ;;
+    esac
+    local ndk_bin="${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point at an Android NDK}/toolchains/llvm/prebuilt/${host_tag}/bin"
     case "$target" in
         aarch64-linux-android) echo "$ndk_bin/aarch64-linux-android${api}-clang" ;;
         armv7-linux-androideabi) echo "$ndk_bin/armv7a-linux-androideabi${api}-clang" ;;
         x86_64-linux-android) echo "$ndk_bin/x86_64-linux-android${api}-clang" ;;
-        *) echo "unsupported Android target: $target" >&2; exit 1 ;;
+        *)
+            err "unsupported Android target: $target"
+            exit 1
+            ;;
     esac
 }
 
@@ -134,9 +190,9 @@ build_android() {
         arm64-v8a) targets=(aarch64-linux-android) ;;
         armeabi-v7a) targets=(armv7-linux-androideabi) ;;
         x86_64) targets=(x86_64-linux-android) ;;
-        all) targets=(aarch64-linux-android armv7-linux-androideabi) ;;
+        all) targets=(aarch64-linux-android armv7-linux-androideabi x86_64-linux-android) ;;
         *)
-            echo "unknown Android ABI: $abi" >&2
+            err "unknown Android ABI: $abi"
             exit 2
             ;;
     esac
@@ -146,7 +202,9 @@ build_android() {
         local linker env_name target_env abi_dir
         linker="$(android_linker "$target")"
         env_name="CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER"
-        target_env="$(echo "$target" | tr 'a-z-' 'A-Z_')"
+        # cc-rs reads CC_<triple> / AR_<triple> with '-' replaced by '_' and
+        # the triple kept lowercase.
+        target_env="$(echo "$target" | tr '-' '_')"
         case "$target" in
             aarch64-linux-android) abi_dir="arm64-v8a" ;;
             armv7-linux-androideabi) abi_dir="armeabi-v7a" ;;
@@ -156,7 +214,7 @@ build_android() {
         export "CC_${target_env}=$linker"
         export "AR_${target_env}=${linker%/*}/llvm-ar"
         log "Android $target (OpenGL ES)"
-        build_engine_and_demo "dist/android-${abi_dir}/${target}" "$target" \
+        build_engine_and_demo "dist/android-${abi_dir}" "$target" \
             --no-default-features --features opengl
     done
 }
@@ -179,7 +237,7 @@ case "$TARGET" in
         fi
         ;;
     *)
-        echo "unknown target: $TARGET" >&2
+        err "unknown target: $TARGET"
         exit 2
         ;;
 esac

@@ -1,36 +1,26 @@
 //! My Game - A game built with Soldatik3D engine
 //!
 //! This is the main entry point for your game. Replace this template with your
-//! own game logic.
+//! own game logic. `src/main.rs` calls [`run_desktop`] for desktop builds and
+//! the `android_main` export below starts the same game on Android.
 
-use runtime::glam::{Vec3, Mat4};
+use runtime::glam::Vec3;
 use runtime::{
-    run,
-    Camera,
-    CameraRig,
-    Game,
-    GameConfig,
-    Light,
-    Material,
-    Mesh,
-    PrimaryLight,
-    Scene,
-    ShadowSettings,
-    UpdateContext,
-    World,
-    VsyncMode,
-    winit,
+    run, Camera, CameraRig, Game, GameConfig, Light, Material, PrimaryLight, Scene, ShadowSettings,
+    UpdateContext, VsyncMode, World,
 };
 
 #[cfg(target_os = "android")]
-use runtime::run_android;
+use runtime::{run_android, winit};
 
 /// Your game state. Add whatever fields you need here.
 pub struct MyGame {
-    /// Camera rotation angle
+    /// Camera rotation angle.
     angle: f32,
-    /// Time accumulator for animations
+    /// Time accumulator for animations.
     time: f32,
+    /// Seconds since the last FPS report.
+    fps_timer: f32,
 }
 
 impl Default for MyGame {
@@ -38,6 +28,7 @@ impl Default for MyGame {
         Self {
             angle: 0.0,
             time: 0.0,
+            fps_timer: 0.0,
         }
     }
 }
@@ -53,29 +44,6 @@ impl Game for MyGame {
     }
 
     fn create_world(&mut self) -> World {
-        // Build the scene (like the demo does)
-        let material = Material::default();
-
-        // Primary light (sun) with shadows
-        let primary_light = PrimaryLight {
-            position: Vec3::new(10.0, 10.0, 10.0),
-            target: Vec3::ZERO,
-            up: Vec3::Y,
-            color: Vec3::new(1.0, 0.95, 0.8),
-            intensity: 3.0,
-            shadow: ShadowSettings::default(),
-        };
-
-        // Point lights
-        let lights = vec![
-            Light::new(Vec3::new(3.0, 2.0, 3.0), Vec3::new(1.0, 0.5, 0.2), 10.0)
-                .with_intensity(5.0),
-            Light::new(Vec3::new(-3.0, 2.0, -3.0), Vec3::new(0.2, 0.5, 1.0), 10.0)
-                .with_intensity(5.0),
-        ];
-
-        // Simple scene with just a primary light and point lights
-        // (no meshes - just lighting for testing)
         let scene = Scene::new(Material::default())
             .with_primary_light(PrimaryLight {
                 position: Vec3::new(10.0, 10.0, 10.0),
@@ -92,7 +60,6 @@ impl Game for MyGame {
                     .with_intensity(5.0),
             ]);
 
-        // Create camera rig (like the demo does)
         let mut cameras = CameraRig::empty();
         let mut camera = Camera::at(Vec3::new(0.0, 2.0, 5.0));
         camera.fov_y_degrees = 70.0;
@@ -100,17 +67,14 @@ impl Game for MyGame {
         camera.z_far = 1000.0;
         cameras.spawn("main", camera);
 
-        // Create world with scene and cameras (like the demo does)
         World::with_cameras(scene, cameras)
     }
 
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
         let dt = ctx.dt;
-
-        // Update time
         self.time += dt;
 
-        // Rotate camera around the scene
+        // Orbit the camera around the lights.
         self.angle += dt * 0.3;
         let radius = 8.0;
         let height = 3.0;
@@ -121,50 +85,49 @@ impl Game for MyGame {
         );
 
         if let Some(named_camera) = ctx.world.active_camera_mut() {
-            named_camera.camera.position = cam_pos;
-            named_camera.camera.yaw = 0.0;
-            named_camera.camera.pitch = 0.0;
+            let camera = &mut named_camera.camera;
+            camera.position = cam_pos;
+            let direction = (Vec3::ZERO - cam_pos).normalize();
+            camera.pitch = direction.y.asin();
+            camera.yaw = direction.z.atan2(direction.x);
         }
 
-        // Animate point lights
-        let lights = &mut ctx.world.scene_mut().lights;
-        for light in lights {
-            // Animate all lights (engine distinguishes by radius > 0 for point lights)
-            let phase = self.time * 2.0;
+        // Animate the point lights.
+        let phase = self.time * 2.0;
+        for light in &mut ctx.world.scene_mut().lights {
             light.position.y = 2.0 + (phase + light.position.x).sin() * 0.5;
-            light.intensity = 5.0 + phase.sin() * 1.0;
+            light.intensity = 5.0 + phase.sin();
         }
 
-        // Handle input
-        let input = ctx.input;
-        if input.key_pressed(winit::keyboard::KeyCode::Escape) {
-            // Exit is handled via console command "quit" or "exit"
-        }
-
-        // Print FPS every second using ctx.stats
-        static mut LAST_FPS_PRINT: f32 = 0.0;
-        unsafe {
-            LAST_FPS_PRINT += dt;
-            if LAST_FPS_PRINT >= 1.0 {
-                let stats = ctx.stats;
-                println!("FPS: {:.1} | Vertices: {} | Triangles: {} | Draw calls: {}",
-                    1.0 / dt, stats.vertices, stats.triangles, stats.draw_calls);
-                LAST_FPS_PRINT = 0.0;
-            }
+        // Report frame statistics once per second.
+        self.fps_timer += dt;
+        if self.fps_timer >= 1.0 {
+            let stats = ctx.stats;
+            println!(
+                "FPS: {:.1} | Vertices: {} | Triangles: {} | Draw calls: {}",
+                1.0 / dt,
+                stats.vertices,
+                stats.triangles,
+                stats.draw_calls
+            );
+            self.fps_timer = 0.0;
         }
     }
 }
 
-/// Desktop entry point
-fn main() -> anyhow::Result<()> {
+/// Run the game on Linux or Windows.
+///
+/// This is called by the desktop binary in `src/main.rs`.
+pub fn run_desktop() -> anyhow::Result<()> {
     run(MyGame::default())
 }
 
-/// Android native-activity entry point
+/// Android native-activity entry point. The host APK loads this shared library
+/// and calls `android_main`.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
-    if let Err(e) = run_android(MyGame::default(), app) {
-        eprintln!("Game failed: {e:?}");
+pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    if let Err(error) = run_android(MyGame::default(), app) {
+        eprintln!("Game failed: {error:?}");
     }
 }

@@ -167,6 +167,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -177,8 +183,12 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -x "$NDK_BIN/${{ matrix.linker }}"
           echo "${{ matrix.linker_env }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
-          echo "CC_${{ matrix.target }}=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
-          echo "AR_${{ matrix.target }}=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
+          # cc-rs expects the target triple with '-' replaced by '_' in
+          # CC_<triple> / AR_<triple> variable names.
+          TRIPLE="${{ matrix.target }}"
+          TRIPLE_US="${TRIPLE//-/_}"
+          echo "CC_$TRIPLE_US=$NDK_BIN/${{ matrix.linker }}" >> "$GITHUB_ENV"
+          echo "AR_$TRIPLE_US=$NDK_BIN/llvm-ar" >> "$GITHUB_ENV"
 
       - name: Build engine (runtime, OpenGL ES)
         run: |
@@ -197,21 +207,24 @@ jobs:
         with:
           cmdline-tools-version: latest
           accept-android-sdk-licenses: true
-          packages: platforms;android-34 build-tools;34.0.0 cmake;3.22.1
+          packages: "platforms;android-34 build-tools;34.0.0 platform-tools"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build APK
+        env:
+          SOLDATIK3D_ANDROID_LIB_NAME: demo
+          SOLDATIK3D_ANDROID_APP_ID: com.soldatik3d.demo
+          SOLDATIK3D_ANDROID_APP_NAME: Soldatik3D Demo
         run: |
-          # Build native libraries first (already done above)
-          # Now build the APK using the gradle template
+          # Package the native demo library with the Gradle project that is
+          # also used by scripts/apk/build_apk.sh.
           GRADLE_DIR="android/gradle"
+          rm -rf "$GRADLE_DIR"
           mkdir -p "$GRADLE_DIR"
-          # Use the source of truth Gradle template from scripts/apk/
-          rsync -a --delete "scripts/apk/gradle/" "$GRADLE_DIR/"
-          
-          # Copy native library to jniLibs
+          cp -a scripts/apk/gradle/. "$GRADLE_DIR/"
+
           ABI="${{ matrix.abi }}"
           RUST_TARGET="${{ matrix.target }}"
           PROFILE="debug"
@@ -219,17 +232,26 @@ jobs:
           JNI_LIBS_DIR="$GRADLE_DIR/app/src/main/jniLibs/$ABI"
           mkdir -p "$JNI_LIBS_DIR"
           cp "$NATIVE_LIB" "$JNI_LIBS_DIR/libdemo.so"
-          
+
           cd "$GRADLE_DIR"
           chmod +x gradlew
-          ./gradlew assembleDebug
-          
-          # Copy APK to dist
+          ./gradlew --no-daemon assembleDebug
+
           APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
           OUTPUT_APK="../../apk/app-${{ matrix.abi }}-debug.apk"
           mkdir -p ../../apk
           cp "$APK_PATH" "$OUTPUT_APK"
           cd ../..
+
+      - name: Verify APK
+        run: |
+          APK="apk/app-${{ matrix.abi }}-debug.apk"
+          test -f "$APK"
+          # An APK is a zip file; make sure the native library and manifest
+          # are actually inside before uploading it.
+          unzip -Z1 "$APK" | grep -Fx "lib/${{ matrix.abi }}/libdemo.so"
+          unzip -Z1 "$APK" | grep -Fx "AndroidManifest.xml"
+          echo "APK contents verified: $APK"
 
       - name: Package CI artifacts
         run: |

@@ -1,610 +1,385 @@
-# Advanced Examples
+# Advanced Example
 
-Complex examples demonstrating advanced engine features.
+A procedural scene with several meshes, two cameras, runtime camera switching,
+debug views and game-defined console commands.
 
-## Procedural Terrain
+## Goal
+
+- Build a small room from generated quads.
+- Add a point light and a shadow-casting primary light.
+- Spawn a static `overview` camera and a moving `orbit` camera.
+- Switch cameras with `1` / `2`, cycle with `C`.
+- Toggle lit/normals/depth with `F2`/`F3`/`F4`.
+- Add `spawn_light` and `reset` console commands.
+
+## Create the project
+
+```bash
+cargo build --release -p s3d
+./target/release/s3d new advanced_game
+cd advanced_game
+```
+
+## `src/lib.rs`
 
 ```rust
-use soldatik3d::{
-    run, Game, GameConfig, UpdateContext, World,
-    Vec3, Mesh, Material, Transform, Color,
-    PerlinNoise,
+use runtime::glam::Vec3;
+use runtime::winit::keyboard::KeyCode;
+use runtime::{
+    run, Aabb, Camera, CameraId, CameraRig, CommandContext, DebugView, Game,
+    GameConfig, InputMap, Light, Material, Mesh, PrimaryLight, Scene,
+    ShadowSettings, TextureData, UpdateContext, Vertex, World,
 };
 
-struct TerrainGame {
-    terrain_chunks: Vec<TerrainChunk>,
-    noise: PerlinNoise,
+pub struct AdvancedGame {
+    time: f32,
+    overview: CameraId,
+    orbit: CameraId,
+    view: DebugView,
 }
 
-struct TerrainChunk {
-    entity: soldatik3d::EntityId,
-    position: Vec3,
-    size: u32,
-}
-
-impl Default for TerrainGame {
-    fn default() -> Self {
+impl AdvancedGame {
+    fn new() -> Self {
         Self {
-            terrain_chunks: Vec::new(),
-            noise: PerlinNoise::new(fastrand::u64(..)),
+            time: 0.0,
+            overview: CameraId::from_raw(0),
+            orbit: CameraId::from_raw(0),
+            view: DebugView::Lit,
+        }
+    }
+
+    fn set_view(&mut self, view: DebugView) -> String {
+        self.view = view;
+        match view {
+            DebugView::Lit => "view: lit".to_owned(),
+            DebugView::Normals => "view: normals".to_owned(),
+            DebugView::Depth => "view: depth".to_owned(),
         }
     }
 }
 
-impl Game for TerrainGame {
+fn quad(
+    center: Vec3,
+    right: Vec3,
+    up: Vec3,
+    half_width: f32,
+    half_height: f32,
+    color: [f32; 3],
+    normal: Vec3,
+    uvs: [[f32; 2]; 4],
+) -> Mesh {
+    let corners = [
+        center - right * half_width - up * half_height,
+        center + right * half_width - up * half_height,
+        center + right * half_width + up * half_height,
+        center - right * half_width + up * half_height,
+    ];
+    let mut vertices = Vec::with_capacity(6);
+    for index in [0, 1, 2, 0, 2, 3] {
+        let position = corners[index];
+        vertices.push(Vertex::new(
+            [position.x, position.y, position.z],
+            color,
+            [normal.x, normal.y, normal.z],
+            uvs[index],
+        ));
+    }
+    Mesh::new(
+        vertices,
+        Aabb::new(
+            corners[0].min(corners[2]),
+            corners[0].max(corners[2]),
+        ),
+    )
+}
+
+fn build_room() -> Vec<Mesh> {
+    let uv = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+    let mut meshes = Vec::new();
+
+    // Floor and ceiling.
+    meshes.push(quad(
+        Vec3::new(0.0, -2.0, 0.0),
+        Vec3::X,
+        Vec3::Z,
+        6.0,
+        6.0,
+        [0.45, 0.45, 0.5],
+        Vec3::Y,
+        uv,
+    ));
+    meshes.push(quad(
+        Vec3::new(0.0, 2.0, 0.0),
+        Vec3::X,
+        Vec3::Z,
+        6.0,
+        6.0,
+        [0.75, 0.75, 0.8],
+        -Vec3::Y,
+        uv,
+    ));
+
+    // Walls. Normals point into the room.
+    let wall_uv = [[0.0, 0.0], [3.0, 0.0], [3.0, 3.0], [0.0, 3.0]];
+    for (center, right, normal, color) in [
+        (Vec3::new(0.0, 0.0, -6.0), Vec3::X, Vec3::Z, [0.8, 0.5, 0.4]),
+        (Vec3::new(0.0, 0.0, 6.0), -Vec3::X, -Vec3::Z, [0.4, 0.6, 0.8]),
+        (Vec3::new(-6.0, 0.0, 0.0), Vec3::Z, Vec3::X, [0.6, 0.7, 0.4]),
+        (Vec3::new(6.0, 0.0, 0.0), -Vec3::Z, -Vec3::X, [0.7, 0.4, 0.7]),
+    ] {
+        meshes.push(quad(
+            center,
+            right,
+            Vec3::Y,
+            6.0,
+            2.0,
+            color,
+            normal,
+            wall_uv,
+        ));
+    }
+
+    // Three pillars.
+    for offset in [-3.0_f32, 0.0, 3.0] {
+        meshes.push(quad(
+            Vec3::new(offset, 0.0, 0.0),
+            Vec3::X,
+            Vec3::Y,
+            0.3,
+            1.8,
+            [0.9, 0.85, 0.7],
+            -Vec3::Z,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ));
+    }
+
+    meshes
+}
+
+impl Game for AdvancedGame {
     fn config(&self) -> GameConfig {
-        GameConfig::default().with_title("Procedural Terrain")
+        GameConfig::default()
+            .with_title("Advanced Soldatik3D Example")
+            .with_size(1280, 720)
     }
 
     fn create_world(&mut self) -> World {
-        let mut world = World::default();
+        let scene = Scene::new(Material {
+                albedo: TextureData::white(),
+                metallic: 0.0,
+                roughness: 0.85,
+            })
+            .with_meshes(build_room())
+            .with_lights(vec![
+                Light::new(Vec3::new(-3.0, 1.0, -2.0), Vec3::new(1.0, 0.5, 0.3), 10.0)
+                    .with_intensity(3.0),
+                Light::new(Vec3::new(3.0, 1.0, 2.0), Vec3::new(0.3, 0.6, 1.0), 10.0)
+                    .with_intensity(3.0),
+            ])
+            .with_primary_light(PrimaryLight {
+                position: Vec3::new(4.0, 8.0, 6.0),
+                target: Vec3::ZERO,
+                up: Vec3::Y,
+                color: Vec3::ONE,
+                intensity: 1.2,
+                shadow: ShadowSettings {
+                    ortho_half_extent: 8.0,
+                    near: 0.1,
+                    far: 40.0,
+                },
+            })
+            .with_clear_color([0.01, 0.012, 0.02, 1.0]);
 
-        // Camera
-        world.add_camera("main".into(), soldatik3d::Camera::new()
-            .with_position(soldatik3d::Vec3::new(0.0, 50.0, 100.0))
-            .with_target(soldatik3d::Vec3::ZERO)
-            .with_fov_y(60.0));
-
-        // Sun
-        world.add_light(soldatik3d::Light::directional()
-            .with_direction(soldatik3d::Vec3::new(-0.5, -1.0, -0.3).normalize())
-            .with_intensity(3.0)
-            .with_cast_shadows(true));
-
-        // Generate initial chunks
-        let chunk_size = 32;
-        let chunk_scale = 2.0;
-        for x in -2..=2 {
-            for z in -2..=2 {
-                let chunk = self.generate_chunk(&mut world, x, z, chunk_size, chunk_scale);
-                self.terrain_chunks.push(chunk);
-            }
-        }
-
-        World::default()
-    }
-
-    fn generate_chunk(&mut self, world: &mut World, cx: i32, cz: i32, size: u32, scale: f32) -> TerrainChunk {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let half = size as f32 / 2.0;
-        let world_x = cx as f32 * size as f32 * 2.0;
-        let world_z = cz as f32 * size as f32 * 2.0;
-
-        for gz in 0..=size {
-            for gx in 0..=size {
-                let wx = (gx as f32 - size as f32 / 2.0) * scale + world_x;
-                let wz = (gz as f32 - size as f32 / 2.0) * scale + world_z;
-                
-                // Multi-octave noise
-                let height = self.noise.get([
-                    wx * 0.01, wz * 0.01
-                ]) * 10.0 +
-                self.noise.get([
-                    wx * 0.05, wz * 0.05
-                ]) * 5.0 +
-                self.noise.get([
-                    wx * 0.1, wz * 0.1
-                ]) * 2.0;
-
-                let color = if height > 5.0 {
-                    soldatik3d::Color::rgb(0.6, 0.5, 0.4) // Rock
-                } else if height > 2.0 {
-                    soldatik3d::Color::rgb(0.3, 0.6, 0.3) // Grass
-                } else if height > 0.0 {
-                    soldatik3d::Color::rgb(0.2, 0.5, 0.8) // Water
-                } else {
-                    soldatik3d::Color::rgb(0.1, 0.2, 0.6) // Deep water
-                };
-
-                vertices.push(soldatik3d::Vertex {
-                    position: soldatik3d::Vec3::new(wx, height, wz),
-                    normal: soldatik3d::Vec3::Y,
-                    tangent: soldatik3d::Vec3::X,
-                    bitangent_sign: 1.0,
-                    uv: soldatik3d::Vec2::new(gx as f32 / size as f32, gz as f32 / size as f32),
-                    color: color,
-                });
-            }
-        }
-
-        // Generate indices (quads -> 2 triangles)
-        let mut indices = Vec::new();
-        for gz in 0..size {
-            for gx in 0..size {
-                let a = gz * (size + 1) + gx;
-                let b = gz * (size + 1) + gx + 1;
-                let c = (gz + 1) * (size + 1) + gx;
-                let d = (gz + 1) * (size + 1) + gx + 1;
-                
-                indices.extend_from_slice(&[a, c, b, b, c, d]);
-            }
-        }
-
-        let mesh = soldatik3d::Mesh { vertices, indices: Some(indices), bounds: soldatik3d::Aabb::default() };
-        let entity = world.spawn_mesh(mesh, soldatik3d::Transform::identity(),
-            soldatik3d::Material::default().with_albedo(soldatik3d::Color::WHITE));
-
-        TerrainChunk {
-            entity,
-            position: soldatik3d::Vec3::new(cx as f32 * size as f32 * 2.0, 0.0, cz as f32 * size as f32 * 2.0),
-            size,
-        }
-    }
-
-    fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Chunk streaming based on camera position would go here
-        
-        if ctx.input.is_key_just_pressed(soldatik3d::KeyCode::Escape) {
-            ctx.request_exit();
-        }
-    }
-}
-```
-
----
-
-## Custom Shader Integration
-
-```rust
-// Custom PBR shader with additional features
-const CUSTOM_VERTEX: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 a_position;
-layout(location = 1) in vec3 a_normal;
-layout(location = 2) in vec3 a_tangent;
-layout(location = 3) in float a_bitangent_sign;
-layout(location = 4) in vec2 a_uv;
-layout(location = 5) in vec4 a_color;
-
-layout(std140, binding = 0) uniform PerFrame {
-    mat4 u_view_projection;
-    mat4 u_view;
-    vec3 u_camera_pos;
-    float u_time;
-};
-
-layout(location = 0) out vec3 v_world_pos;
-layout(location = 1) out vec3 v_normal;
-layout(location = 2) out vec3 v_tangent;
-layout(location = 3) out float v_bitangent_sign;
-layout(location = 4) out vec2 v_uv;
-layout(location = 5) out vec4 v_color;
-
-void main() {
-    vec4 world_pos = vec4(a_position, 1.0);
-    v_world_pos = world_pos.xyz;
-    v_normal = normalize(mat3(u_view) * a_normal);
-    v_tangent = normalize(mat3(u_view) * a_tangent);
-    v_bitangent_sign = a_bitangent_sign;
-    v_uv = a_uv;
-    v_color = a_color;
-    gl_Position = u_view_projection * world_pos;
-}
-"#;
-
-const CUSTOM_FRAGMENT: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 v_world_pos;
-layout(location = 1) in vec3 v_normal;
-layout(location = 2) in vec3 v_tangent;
-layout(location = 3) in float v_bitangent_sign;
-layout(location = 4) in vec2 v_uv;
-layout(location = 5) in vec4 v_color;
-
-layout(std140, binding = 1) uniform Lights {
-    vec4 u_light_pos[8];
-    vec4 u_light_color[8];
-    int u_light_count;
-    vec3 u_ambient;
-};
-
-layout(binding = 0) uniform sampler2D u_albedo_map;
-layout(binding = 1) uniform sampler2D u_normal_map;
-layout(binding = 2) uniform sampler2D u_roughness_map;
-layout(binding = 3) uniform sampler2D u_metallic_map;
-layout(binding = 4) uniform sampler2D u_ao_map;
-
-layout(binding = 5) uniform samplerCube u_env_map;
-
-out vec4 frag_color;
-
-vec3 unpack_normal(vec3 map_normal) {
-    vec3 n = map_normal * 2.0 - 1.0;
-    return normalize(n);
-}
-
-vec3 calculate_lighting(vec3 N, vec3 V, vec3 albedo, float metallic, float roughness, float ao) {
-    vec3 Lo = vec3(0.0);
-    
-    for (int i = 0; i < u_light_count; i++) {
-        vec3 L = normalize(u_light_pos[i].xyz - v_world_pos);
-        float distance = length(u_light_pos[i].xyz - v_world_pos);
-        float attenuation = 1.0 / (distance * distance + 1.0);
-        vec3 radiance = u_light_color[i].rgb * u_light_color[i].a * attenuation;
-        
-        // PBR BRDF (simplified)
-        float NdotL = max(dot(N, L), 0.0);
-        Lo += radiance * albedo * NdotL;
-    }
-    
-    // Ambient (IBL approximation)
-    vec3 ambient = u_ambient * albedo * ao;
-    
-    return Lo + ambient;
-}
-
-void main() {
-    vec3 N = normalize(v_normal);
-    vec3 V = normalize(-v_world_pos);
-    
-    // Sample textures
-    vec4 albedo_tex = texture(u_albedo_map, v_uv);
-    vec3 albedo = albedo_tex.rgb * v_color.rgb;
-    float alpha = albedo_tex.a * v_color.a;
-    
-    float metallic = texture(u_metallic_map, v_uv).r;
-    float roughness = texture(u_roughness_map, v_uv).r;
-    float ao = texture(u_ao_map, v_uv).r;
-    
-    // Normal mapping
-    vec3 map_normal = texture(u_normal_map, v_uv).xyz;
-    vec3 N = N; // Would need TBN matrix for proper normal mapping
-    
-    vec3 color = calculate_lighting(N, V, albedo, metallic, roughness, ao);
-    
-    // Tonemapping (ACES)
-    color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0/2.2));
-    
-    frag_color = vec4(color, alpha);
-}
-"#;
-
-struct ShaderDemo {
-    custom_shader: Option<soldatik3d::ShaderHandle>,
-}
-
-impl Default for ShaderDemo {
-    fn default() -> Self { Self { custom_shader: None } }
-}
-
-impl Game for ShaderDemo {
-    fn create_world(&mut self) -> World {
-        let mut world = World::default();
-        
-        // Load custom shader
-        self.custom_shader = Some(ctx.renderer.load_shader("assets/shaders/custom.frag")?);
-        
-        world
-    }
-    
-    fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Use custom shader for specific entities
-        // ctx.renderer.set_shader_for_entity(entity, self.custom_shader.unwrap());
-    }
-}
-```
-
----
-
-## Compute Shader (Vulkan Only)
-
-```rust
-// Not directly exposed in engine API
-// Would require extending Renderer trait
-// Example structure:
-
-struct ComputeExample {
-    compute_pipeline: Option<vk::Pipeline>,
-    storage_buffer: Option<vk::Buffer>,
-}
-
-impl ComputeExample {
-    fn init_compute(&mut self, renderer: &mut VulkanRenderer) {
-        // Create compute shader
-        let compute_src = r#"
-#version 450
-layout(local_size_x = 256) in;
-
-layout(set = 0, binding = 0, std430) readonly buffer Input {
-    float data[];
-} input_buf;
-
-layout(set = 0, binding = 1, std430) buffer Output {
-    float data[];
-} output_buf;
-
-void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx < input_buf.data.length()) {
-        output_buf.data[idx] = input_buf.data[idx] * 2.0;
-    }
-}
-"#;
-        
-        // Compile with shaderc
-        // Create pipeline, descriptor sets, dispatch
-    }
-}
-```
-
----
-
-## Multiplayer Architecture (Conceptual)
-
-```rust
-use soldatik3d::*;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
-
-struct MultiplayerGame {
-    local_player: EntityId,
-    remote_players: Arc<Mutex<HashMap<u64, RemotePlayer>>>,
-    network_tx: mpsc::Sender<NetworkMessage>,
-    network_rx: mpsc::Receiver<NetworkMessage>,
-}
-
-struct RemotePlayer {
-    entity: EntityId,
-    position: Vec3,
-    rotation: Quat,
-    last_update: f32,
-}
-
-enum NetworkMessage {
-    PlayerJoin(u64),
-    PlayerLeave(u64),
-    PlayerUpdate { id: u64, pos: Vec3, rot: Quat },
-    ChatMessage(String),
-}
-
-impl Game for MultiplayerGame {
-    fn create_world(&mut self) -> World {
-        let mut world = World::default();
-        
-        // Spawn local player
-        self.local_player = world.spawn_mesh(
-            Mesh::capsule(1.0, 2.0),
-            Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)),
-            Material::default().with_albedo(Color::rgb(0.0, 0.5, 1.0))
+        let mut cameras = CameraRig::empty();
+        self.overview = cameras.spawn(
+            "overview",
+            Camera::at(Vec3::new(0.0, 7.0, 9.0))
+                .with_pitch_degrees(-35.0)
+                .with_fov_degrees(55.0),
         );
-        
-        // Start network thread
-        let (tx, rx) = mpsc::channel(100);
-        self.network_tx = tx.clone();
-        self.network_rx = rx;
-        
-        std::thread::spawn(move || {
-            // Network loop
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                // Connect to server, handle messages
-            });
-        });
-        
-        World::default()
+        self.orbit = cameras.spawn(
+            "orbit",
+            Camera::at(Vec3::new(0.0, 0.0, 5.0))
+                .with_yaw_degrees(0.0)
+                .with_pitch_degrees(0.0),
+        );
+        cameras.select(self.overview);
+        World::with_cameras(scene, cameras)
     }
-    
+
+    fn input_map(&self) -> InputMap {
+        InputMap::new().bind("cycle_camera", &[KeyCode::KeyC])
+    }
+
+    fn debug_view(&self) -> DebugView {
+        self.view
+    }
+
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Process network messages
-        while let Ok(msg) = self.network_rx.try_recv() {
-            match msg {
-                NetworkMessage::PlayerJoin(id) => {
-                    let entity = ctx.world.spawn_mesh(
-                        Mesh::capsule(1.0, 2.0),
-                        Transform::identity(),
-                        Material::default().with_albedo(Color::rgb(1.0, 0.0, 0.5))
-                    );
-                    self.remote_players.lock().unwrap().insert(id, RemotePlayer {
-                        entity, position: Vec3::ZERO, rotation: Quat::IDENTITY, last_update: ctx.time
-                    });
+        self.time += ctx.dt;
+
+        if ctx.input.key_pressed(KeyCode::Digit1) {
+            ctx.world.select_camera_name("overview");
+        }
+        if ctx.input.key_pressed(KeyCode::Digit2) {
+            ctx.world.select_camera_name("orbit");
+        }
+        if ctx.input.action_pressed("cycle_camera") {
+            ctx.world.select_next_camera();
+        }
+        if ctx.input.key_pressed(KeyCode::F2) {
+            self.view = DebugView::Lit;
+        }
+        if ctx.input.key_pressed(KeyCode::F3) {
+            self.view = DebugView::Normals;
+        }
+        if ctx.input.key_pressed(KeyCode::F4) {
+            self.view = DebugView::Depth;
+        }
+
+        let angle = self.time * 0.4;
+        if let Some(orbit) = ctx.world.cameras_mut().get_mut(self.orbit) {
+            orbit.camera.position = Vec3::new(angle.sin() * 5.0, 0.0, angle.cos() * 5.0);
+            orbit.camera.yaw = (-orbit.camera.position.z)
+                .atan2(-orbit.camera.position.x);
+        }
+
+        ctx.ui.rect(16.0, 16.0, 380.0, 96.0, [0.0, 0.0, 0.0, 0.6]);
+        ctx.ui.text("ADVANCED EXAMPLE", 30.0, 28.0, 1.3, [1.0; 4]);
+        ctx.ui.text(
+            &format!(
+                "CAMERA: {}   VIEW: {:?}",
+                ctx.world.active_camera_name(),
+                self.view
+            ),
+            30.0,
+            56.0,
+            1.0,
+            [0.7, 0.85, 1.0, 1.0],
+        );
+        ctx.ui.text(
+            "1/2 SELECT   C CYCLE   F2/F3/F4 VIEW",
+            30.0,
+            80.0,
+            1.0,
+            [0.6, 0.6, 0.65, 1.0],
+        );
+    }
+
+    fn command_help(&self) -> &'static [(&'static str, &'static str)] {
+        &[
+            ("views", "list debug views"),
+            ("look", "look <yaw> <pitch>"),
+        ]
+    }
+
+    fn command(&mut self, ctx: &mut CommandContext<'_>) -> Option<Result<String, String>> {
+        match ctx.name {
+            "views" => Some(Ok("lit, normals, depth".to_owned())),
+            "look" => {
+                if ctx.args.len() != 2 {
+                    return Some(Err("usage: look <yaw> <pitch>".into()));
                 }
-                NetworkMessage::PlayerLeave(id) => {
-                    if let Some(player) = self.remote_players.lock().unwrap().remove(&id) {
-                        ctx.world.remove_entity(player.entity);
-                    }
+                let yaw: f32 = match ctx.args[0].parse() {
+                    Ok(value) => value,
+                    Err(_) => return Some(Err("invalid yaw".into())),
+                };
+                let pitch: f32 = match ctx.args[1].parse() {
+                    Ok(value) => value,
+                    Err(_) => return Some(Err("invalid pitch".into())),
+                };
+                if let Some(camera) = ctx.world.active_camera_mut() {
+                    camera.camera.yaw = yaw.to_radians();
+                    camera.camera.pitch = pitch.to_radians();
                 }
-                NetworkMessage::PlayerUpdate { id, pos, rot } => {
-                    if let Some(player) = self.remote_players.lock().unwrap().get_mut(&id) {
-                        if let Some(entity) = ctx.world.entity_mut(player.entity) {
-                            entity.transform.translation = pos;
-                            entity.transform.rotation = rot;
-                            player.position = pos;
-                            player.rotation = rot;
-                            player.last_update = ctx.time;
-                        }
-                    }
-                }
-                _ => {}
+                Some(Ok(format!("look: yaw {yaw}, pitch {pitch}")))
             }
+            _ => None,
         }
-        
-        // Send local player position
-        if let Some(local) = ctx.world.entity(self.local_player) {
-            let msg = NetworkMessage::PlayerUpdate {
-                id: 0, // Local player ID
-                pos: local.transform.translation,
-                rot: local.transform.rotation,
-            };
-            let _ = self.network_tx.try_send(msg);
-        }
+    }
+}
+
+pub fn run_desktop() -> anyhow::Result<()> {
+    run(AdvancedGame::new())
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
+    if let Err(error) = runtime::run_android(AdvancedGame::new(), app) {
+        eprintln!("game failed: {error:?}");
     }
 }
 ```
 
----
+## Try it
 
-## Entity Component System (Custom)
+```bash
+cargo run
+```
+
+In the console (`F1`):
+
+```text
+help
+camera.list
+camera.select orbit
+camera.info
+look -90 -10
+```
+
+Camera switching and debug views do not upload anything to the GPU. Only the
+camera matrices and the `DebugView` enum value change.
+
+## Key points
+
+### Camera IDs
+
+`CameraId` is stable across selection and removal. Store IDs for cameras your
+game controls and `select_name` for user-facing commands. `CameraId::from_raw`
+is only used here to initialize fields before `create_world` runs; a real game
+can use `Option<CameraId>` instead.
+
+### `CameraRig::get_mut`
+
+The orbit camera is moved every frame even while it is not active:
 
 ```rust
-// Lightweight ECS on top of World
-use std::any::TypeId;
-use std::collections::HashMap;
-
-pub trait Component: Send + Sync + 'static {}
-
-#[derive(Default)]
-pub struct ComponentStorage {
-    components: HashMap<TypeId, Box<dyn Any>>,
-}
-
-impl ComponentStorage {
-    pub fn insert<T: Component>(&mut self, entity: EntityId, component: T) {
-        let map = self.components
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(HashMap::<EntityId, T>::new()))
-            .downcast_mut::<HashMap<EntityId, T>>()
-            .unwrap();
-        map.insert(entity, component);
-    }
-    
-    pub fn get<T: Component>(&self, entity: EntityId) -> Option<&T> {
-        self.components.get(&TypeId::of::<T>())?
-            .downcast_ref::<HashMap<EntityId, T>>()?
-            .get(&entity)
-    }
-    
-    pub fn get_mut<T: Component>(&mut self, entity: EntityId) -> Option<&mut T> {
-        self.components.get_mut(&TypeId::of::<T>())?
-            .downcast_mut::<HashMap<EntityId, T>>()?
-            .get_mut(&entity)
-    }
-    
-    pub fn query<T: Component>(&self) -> impl Iterator<Item = (EntityId, &T)> {
-        self.components.get(&TypeId::of::<T>())
-            .and_then(|m| m.downcast_ref::<HashMap<EntityId, T>>())
-            .into_iter()
-            .flat_map(|m| m.iter())
-            .map(|(k, v)| (*k, v))
-    }
-}
-
-// Custom components
-#[derive(Component)]
-struct Velocity { pub value: Vec3 }
-
-#[derive(Component)]
-struct Health { pub current: i32, pub max: i32 }
-
-#[derive(Component)]
-struct AI { pub state: AIState, pub target: Option<EntityId> }
-
-enum AIState { Idle, Chase, Attack, Flee }
-
-// Usage in game
-struct ECSGame {
-    components: ComponentStorage,
-}
-
-impl Game for ECSGame {
-    fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Physics system
-        for (entity, vel) in self.components.query::<Velocity>() {
-            if let Some(transform) = ctx.world.entity_mut(entity).map(|e| &mut e.transform) {
-                transform.translation += vel.value * ctx.dt;
-            }
-        }
-        
-        // Health system
-        for (entity, health) in self.components.query::<Health>() {
-            if health.current <= 0 {
-                ctx.world.remove_entity(entity);
-            }
-        }
-        
-        // AI system
-        for (entity, ai) in self.components.query_mut::<AI>() {
-            match ai.state {
-                AIState::Chase => { /* ... */ }
-                _ => {}
-            }
-        }
-    }
+if let Some(orbit) = ctx.world.cameras_mut().get_mut(self.orbit) {
+    orbit.camera.position = ...;
 }
 ```
 
----
+`active_camera_mut()` is for the camera the player controls. Both are cheap
+lookups.
 
-## Asset Pipeline Integration
+### Procedural geometry
 
-```rust
-use soldatik3d::*;
-use std::path::Path;
+Every mesh is a flat vertex list in world space. The helper builds two triangles
+per quad, computes corners from a center and two axes, and derives bounds from
+the corners. If you generate arbitrary triangles, compute the minimum and
+maximum over all vertices for `Aabb`.
 
-struct AssetPipelineGame {
-    asset_registry: AssetRegistry,
-}
+### Debug views
 
-struct AssetRegistry {
-    textures: HashMap<String, TextureHandle>,
-    models: HashMap<String, ModelHandle>,
-    shaders: HashMap<String, ShaderHandle>,
-    load_queue: Vec<AssetLoadRequest>,
-}
+`Game::debug_view` is queried every frame. There is no `debug.*` console command
+in the engine; a game implements its own, as done here.
 
-enum AssetLoadRequest {
-    Texture { path: String, handle: TextureHandle },
-    Model { path: String, handle: ModelHandle },
-}
+### Console commands
 
-impl AssetRegistry {
-    fn load_texture(&mut self, renderer: &mut dyn Renderer, path: &str) -> TextureHandle {
-        if let Some(handle) = self.textures.get(path) {
-            return *handle;
-        }
-        let handle = renderer.load_texture(path).unwrap();
-        self.textures.insert(path.to_string(), handle);
-        handle
-    }
-    
-    fn load_model(&mut self, renderer: &mut dyn Renderer, path: &str) -> ModelHandle {
-        if let Some(handle) = self.models.get(path) {
-            return *handle;
-        }
-        let handle = renderer.load_model(path).unwrap();
-        self.models.insert(path.to_string(), handle);
-        handle
-    }
-    
-    fn hot_reload(&mut self, renderer: &mut dyn Renderer, changed_files: &[String]) {
-        for file in changed_files {
-            if file.ends_with(".png") || file.ends_with(".jpg") {
-                if let Some(handle) = self.textures.get(file) {
-                    // Reload texture
-                    let data = std::fs::read(file).unwrap();
-                    renderer.update_texture(*handle, &data).ok();
-                }
-            } else if file.ends_with(".glsl") || file.ends_with(".frag") || file.ends_with(".vert") {
-                // Reload shader
-                // renderer.reload_shader(...)
-            }
-        }
-    }
-}
+`views` and `look` are advertised through `command_help` and handled in
+`command`. Built-in commands are handled first, so do not reuse their names.
 
-fn watch_assets(registry: Arc<Mutex<AssetRegistry>>) {
-    use notify::{Watcher, RecursiveMode, Event};
-    
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(tx).unwrap();
-    watcher.watch(Path::new("assets"), RecursiveMode::Recursive).unwrap();
-    
-    std::thread::spawn(move || {
-        for event in rx {
-            if let Ok(Event { paths, .. }) = event {
-                let changed: Vec<String> = paths.into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
-                if let Ok(mut reg) = registry.lock() {
-                    reg.hot_reload(&mut renderer, &changed);
-                }
-            }
-        }
-    }
-}
+## Build an APK
+
+```bash
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
+./build_apk.sh arm64-v8a
 ```
 
----
+## Next steps
 
-*See [API Reference](api/) for complete API documentation, or [Getting Started](getting-started/first-game.md) for foundational concepts.*
+- [Platform-specific example](platform-specific.md)
+- [Input API](../api/input.md)
+- [Console commands](../reference/cli-commands.md)

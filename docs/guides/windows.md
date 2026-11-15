@@ -1,414 +1,104 @@
 # Windows Development
 
-Complete guide for developing and building Soldatik3D games on Windows.
+## Native MSVC builds
 
-## Supported Configurations
+### Requirements
 
-| Configuration | Backend | Status | Notes |
-|---------------|---------|--------|-------|
-| MSVC (Visual Studio) | Vulkan + OpenGL | ✅ **Recommended** | Native performance, full features |
-| MinGW-w64 (GNU) | OpenGL only | ✅ Supported | Cross-compile from Linux |
-| MSYS2/Clang | OpenGL only | ⚠️ Experimental | Limited testing |
-
-## MSVC Setup (Recommended)
-
-### 1. Install Visual Studio Build Tools
-
-1. Download [Visual Studio Build Tools 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)
-2. Run installer, select workloads:
-   - ✅ **Desktop development with C++**
-   - ✅ **Windows 10/11 SDK** (latest)
-   - ✅ **C++ CMake tools for Windows**
-3. Individual components (ensure these are checked):
-   - MSVC v143 - VS 2022 C++ x64/x86 build tools
-   - Windows 10 SDK (10.0.22621.0 or later)
-   - C++ ATL/MFC build tools (optional)
-
-### 2. Install Vulkan SDK
-
-1. Download from [vulkan.lunarg.com](https://vulkan.lunarg.com/sdk/home)
-2. Run installer (default location: `C:\VulkanSDK\1.3.xxx`)
-3. **Important**: Check "Add to PATH" during install
-4. Restart terminal/PowerShell after install
-
-### 3. Install Rust
+1. **Visual Studio Build Tools** with the *Desktop development with C++*
+   workload (MSVC compiler, Windows SDK, CMake).
+2. **Rust stable with the MSVC toolchain**:
 
 ```powershell
-# In PowerShell (Run as Administrator recommended)
-winget install Rustlang.Rustup
-# Or download from rustup.rs
-
-# Restart terminal, then:
-rustup default stable
-rustup component add rustfmt clippy
-
-# Add targets
-rustup target add x86_64-pc-windows-msvc
-rustup target add x86_64-pc-windows-gnu      # For MinGW cross-compile
-rustup target add aarch64-linux-android     # Android ARM64
-rustup target add armv7-linux-androideabi   # Android ARMv7
-```
-
-### 4. Verify Installation
-
-Open **"x64 Native Tools Command Prompt for VS 2022"** (not regular cmd/PowerShell):
-
-```cmd
-:: Check tools
+rustup default stable-msvc
 rustc --version
-cargo --version
-cl.exe
-cmake --version
-vulkaninfo --summary
-
-:: Should show your GPU under "deviceName"
 ```
 
-## Building
+3. A GPU driver with Vulkan and/or OpenGL 3.3 support.
 
-### Debug Build
+The engine builds Vulkan shader tooling through CMake; the Vulkan SDK itself is
+not required.
 
-```cmd
-cd C:\path\to\your_game
+### Build and run
+
+```powershell
+git clone https://github.com/finesoldat1k/soldatik3D
+cd soldatik3D
+
+cargo build --locked -p runtime --all-features
+cargo build --locked -p demo --all-features
+cargo run -p demo
+
+# OpenGL fallback
+$env:SOLDATIK3D_BACKEND = "opengl"
+cargo run -p demo
+```
+
+From a generated game project:
+
+```powershell
 cargo run
+s3d build windows --release
 ```
 
-### Release Build
+`s3d build windows` on Windows uses the native MSVC target; on Linux it uses
+MinGW and OpenGL only.
 
-```cmd
-cargo build --release
-:: Binary at target\release\your_game.exe
-```
+### Release artifacts
 
-### Run with Specific Backend
+The release workflow produces:
 
-```cmd
-:: Vulkan (default)
-cargo run
+- `soldatik3d-engine-windows-x86_64.zip` — `libruntime.rlib`
+- `soldatik3d-demo-windows-x86_64.zip` — `demo.exe` and `README.txt`
+- `soldatik3d-cli-windows-x86_64.zip` — `bin/s3d.exe` plus the project template
+  and engine sources needed by `s3d new`
 
-:: OpenGL
-set SOLDATIK3D_BACKEND=opengl && cargo run
+The demo executable is not code-signed. Windows SmartScreen may warn on first
+launch; use *More info → Run anyway* or sign the binary yourself.
 
-:: Disable VSync for benchmarking
-set SOLDATIK3D_VSYNC=off && cargo run --release
-```
+## Cross-compiling from Linux
 
-### Enable Validation Layers
-
-```cmd
-set VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
-cargo run
-
-:: Or use environment variable
-set SOLDATIK3D_VALIDATION=1 && cargo run
-```
-
-## MinGW-w64 (Cross-compile from Linux)
-
-### On Linux Host
+MinGW builds use the OpenGL backend only; Vulkan is not built for
+`x86_64-pc-windows-gnu`.
 
 ```bash
-# Install MinGW
 sudo apt-get install mingw-w64
-
-# Add target
 rustup target add x86_64-pc-windows-gnu
 
-# Build
-cargo build --target x86_64-pc-windows-gnu --release
-
-# Binary at target/x86_64-pc-windows-gnu/release/your_game.exe
+./scripts/cross_build.sh windows --release
+ls dist/windows-x86_64/
+# demo.exe  libruntime.rlib  s3d.exe
 ```
 
-### On Windows (MSYS2)
+Or from a game project:
 
 ```bash
-# In MSYS2 terminal
-pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
-
-# Add target
-rustup target add x86_64-pc-windows-gnu
-
-# Build
-cargo build --target x86_64-pc-windows-gnu --release
+s3d build windows --release --out-dir dist
 ```
 
-**Limitations:**
-- OpenGL only (Vulkan's `shaderc` C++ build is complex with MinGW)
-- Some Windows-specific features may not work
-- Use MSVC for production Windows builds
+The resulting `.exe` needs a Windows machine (or Wine) to run. It links the
+MinGW runtime; no additional engine DLLs are required.
 
-## Project Configuration for Windows
+## Packaging tips
 
-### Cargo.toml Adjustments
+- Keep `demo.exe` and any data files in the same directory.
+- The engine does not load external shader files at runtime on Windows: GLSL is
+  compiled by shaderc and embedded by the backend.
+- Use `SOLDATIK3D_VSYNC=off` for benchmarks.
+- Use `SOLDATIK3D_MAX_FRAMES=N` for automated smoke tests.
+- Set a console window title with `GameConfig::with_title`.
 
-```toml
-[profile.release]
-lto = "thin"
-codegen-units = 1
-panic = "abort"
-strip = "debuginfo"
+## Troubleshooting
 
-# Windows-specific
-[target.'cfg(windows)'.dependencies]
-# Windows-only dependencies here
-```
+| Problem | Solution |
+|---------|----------|
+| `link.exe not found` | Install Visual Studio Build Tools with C++ and run from a Developer PowerShell, or let `rustup` configure the MSVC environment. |
+| `LNK1181: cannot open input file 'vulkan.lib'` | The Vulkan loader import library is missing; install the Vulkan SDK or use `SOLDATIK3D_BACKEND=opengl` with a build without the `vulkan` feature. |
+| MinGW cross build fails in shaderc | Expected: use `--no-default-features --features opengl`, which `scripts/cross_build.sh windows` does automatically. |
+| OpenGL context creation fails | Update the GPU driver; remote desktop sessions may not expose OpenGL 3.3. |
+| Vulkan validation errors | Update the driver, or run the OpenGL backend. |
 
-### .cargo/config.toml
+## Next steps
 
-```toml
-# MSVC (default on Windows host)
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
-# MinGW cross-compile
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-gcc-ar"
-runner = "wine64"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=lld",
-  "-C", "link-arg=-static",
-]
-```
-
-## Debugging
-
-### Visual Studio Debugger
-
-1. Open `your_game.sln` (generate with `cargo vs` or create manually)
-2. Set project as startup
-3. Press F5
-
-Or attach to running process:
-- Debug → Attach to Process → `your_game.exe`
-
-### WinDbg / CDB
-
-```cmd
-:: Install Windows SDK (includes WinDbg)
-:: Or download WinDbg Preview from Microsoft Store
-
-cdb -G -G target\release\your_game.exe
-```
-
-### RenderDoc
-
-1. Install from [renderdoc.org](https://renderdoc.org/)
-2. Launch RenderDoc
-3. File → Launch Application → Select `target\release\your_game.exe`
-4. Capture with F12
-
-### Tracy Profiler
-
-```toml
-# Cargo.toml
-tracy-client = { version = "0.16", features = ["callstack"] }
-```
-
-```cmd
-cargo build --release --features tracy
-tracy-profiler.exe
-target\release\your_game.exe
-```
-
-## Common Issues
-
-### `LINK : fatal error LNK1181: cannot open input file 'vulkan-1.lib'`
-
-```cmd
-:: Ensure Vulkan SDK is in PATH
-set VULKAN_SDK=C:\VulkanSDK\1.3.xxx
-set PATH=%VULKAN_SDK%\Bin;%PATH%
-set PATH=%VULKAN_SDK%\Lib;%PATH%
-
-:: Or set in Cargo.toml
-[target.'cfg(windows)'.dependencies]
-ash = { version = "0.38", features = ["link"] }
-```
-
-### `error: linking with 'link.exe' failed: exit code: 1120`
-
-```cmd
-:: Usually missing Vulkan library
-:: Check VULKAN_SDK environment variable
-echo %VULKAN_SDK%
-
-:: Should point to SDK root, e.g. C:\VulkanSDK\1.3.283.0
-```
-
-### `error: failed to run custom build command for 'shaderc-sys'`
-
-```cmd
-:: shaderc needs CMake, Ninja, Python
-:: Install via winget/chocolatey
-winget install Kitware.CMake Ninja-build Python.Python.3.11
-
-:: Ensure in PATH
-cmake --version
-ninja --version
-python --version
-```
-
-### MinGW: `error: cannot find -lvulkan`
-
-```bash
-# On Linux cross-compile
-# Install mingw-w64 vulkan headers
-sudo apt-get install mingw-w64-vulkan-headers
-
-# Or set PKG_CONFIG_PATH
-export PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig
-```
-
-### `SOLDATIK3D_BACKEND=vulkan` fails on Windows
-
-```cmd
-:: Check Vulkan driver
-vulkaninfo --summary | findstr deviceName
-
-:: Try OpenGL as fallback
-set SOLDATIK3D_BACKEND=opengl
-cargo run
-```
-
-## Distribution Packaging
-
-### Inno Setup Installer
-
-```iss
-; your_game.iss
-[Setup]
-AppName=Your Game
-AppVersion=1.0
-DefaultDirName={pf}\Your Game
-OutputDir=dist
-OutputBaseFilename=YourGame-Setup
-
-[Files]
-Source: "target\release\your_game.exe"; DestDir: "{app}"
-Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs
-
-[Icons]
-Name: "{group}\Your Game"; Filename: "{app}\your_game.exe"
-Name: "{commondesktop}\Your Game"; Filename: "{app}\your_game.exe"
-```
-
-Build:
-```cmd
-iscc your_game.iss
-```
-
-### NSIS Installer
-
-```nsi
-; your_game.nsi
-Name "Your Game"
-OutFile "dist\YourGame-Installer.exe"
-InstallDir "$PROGRAMFILES\Your Game"
-
-Section
-  SetOutPath "$INSTDIR"
-  File "target\release\your_game.exe"
-  File /r "assets\*"
-  
-  CreateDirectory "$SMPROGRAMS\Your Game"
-  CreateShortcut "$SMPROGRAMS\Your Game\Your Game.lnk" "$INSTDIR\your_game.exe"
-SectionEnd
-```
-
-Build:
-```cmd
-makensis your_game.nsi
-```
-
-### Zip Package (Simple)
-
-```cmd
-cd target\release
-powershell Compress-Archive -Path your_game.exe, assets\* -DestinationPath ..\..\dist\your_game-windows.zip
-```
-
-## CI/CD (GitHub Actions)
-
-```yaml
-# .github/workflows/windows.yml
-name: Windows Build
-
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 60
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-          
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: windows-${{ hashFiles('**/Cargo.lock') }}
-          
-      - name: Build
-        run: cargo build --locked --release
-        shell: cmd
-        
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-msvc
-          path: target/release/*.exe
-          retention-days: 14
-```
-
-## Windows-Specific Features
-
-### High DPI Support
-
-```rust
-// In Game::config
-GameConfig::default()
-    .with_window_hints(WindowHints {
-        // Windows handles DPI scaling automatically
-        ..Default::default()
-    })
-```
-
-### Gamepad (XInput)
-
-```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    if let Some(pad) = ctx.input.gamepad(0) {
-        // Left stick
-        let move_x = pad.axis(GamepadAxis::LeftStickX);
-        let move_y = pad.axis(GamepadAxis::LeftStickY);
-        
-        // Triggers
-        let lt = pad.axis(GamepadAxis::LeftTrigger);
-        let rt = pad.axis(GamepadAxis::RightTrigger);
-        
-        // Buttons
-        if pad.is_button_pressed(GamepadButton::South) { // A
-            jump();
-        }
-    }
-}
-```
-
-### File Associations
-
-```rust
-// Register .sav extension for save files
-// In installer or first run
-use windows::Win32::UI::Shell::SHChangeNotify;
-```
-
----
-
-*See [Cross-Compilation](cross-compilation.md) for building Windows from Linux, or [Linux](linux.md) for the primary development platform.*
+- [Linux](linux.md)
+- [Android](android.md)
+- [Cross-compilation](cross-compilation.md)

@@ -7,36 +7,28 @@ repository = "https://github.com/yourname/my_game"
 description = "A game built with Soldatik3D engine"
 publish = false
 
-# Opt out of parent workspace (if generated inside engine repo)
+# Opt out of the parent workspace when the project is generated inside the
+# engine repository. Keep this so the game builds on its own.
 [workspace]
 
 [lib]
-# Required for Android native-activity
+# `cdylib` is the Android native-activity library; `rlib` lets the desktop
+# binary in src/main.rs reuse the same game code.
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
-# Enable one of these after adding soldatik3d dependency:
-# vulkan = ["soldatik3d/vulkan"]
-# opengl = ["soldatik3d/opengl"]
+default = ["vulkan", "opengl"]
+vulkan = ["runtime/vulkan"]
+opengl = ["runtime/opengl"]
 
 [dependencies]
-# Use the engine from local path (adjust if needed):
-# For projects created inside the engine repo (s3d new from engine root):
-#   runtime = { path = "../crates/runtime", features = ["vulkan", "opengl"] }
-# For external projects: update this path to point to the engine repo's crates/runtime
-# Or use a git dependency when published:
-# runtime = { git = "https://github.com/finesoldat1k/soldatik3D", branch = "main" }
-runtime = { path = "../crates/runtime", features = ["vulkan", "opengl"] }
+# `s3d new` rewrites this path to point at the engine checkout you used to
+# create the project. For a hand-written project, point it at the engine's
+# crates/runtime directory or use a git dependency.
+runtime = { path = "../crates/runtime", default-features = false }
 anyhow = "1.0"
-# Add your game-specific dependencies here
 
-# Platform-specific dependencies
+# Android native-activity entry point.
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
 jni = "0.21"
-
-# Example of optional dependencies you might want:
-# nalgebra = "0.32"  # If you need different math
-# serde = { version = "1.0", features = ["derive"] }  # For save/load
-# rand = "0.8"  # For procedural generation

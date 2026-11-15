@@ -1,460 +1,275 @@
-# Platform-Specific Examples
+# Platform-Specific Code
 
-Examples tailored for each target platform.
+Soldatik3D targets Linux, Windows and Android. Most game code is shared; this
+page covers the parts that differ.
 
-## Linux-Specific
+## One game, three entry points
 
-### Vulkan Validation Layers
+A generated project already has the right structure:
 
-```bash
-# Install validation layers
-sudo apt-get install vulkan-validationlayers-dev
-
-# Run with validation
-SOLDATIK3D_VALIDATION=1 cargo run
-
-# Or in code
-std::env::set_var("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation");
+```text
+src/lib.rs    game implementation + Android entry point
+src/main.rs   desktop entry point
 ```
 
-### Wayland vs X11
-
-```bash
-# Force Wayland
-GDK_BACKEND=wayland cargo run
-
-# Force X11
-GDK_BACKEND=x11 cargo run
-
-# Check current
-echo $XDG_SESSION_TYPE
-```
-
-### Multi-GPU (PRIME)
-
-```bash
-# Use discrete GPU (NVIDIA on Optimus)
-DRI_PRIME=1 cargo run
-
-# Or with environment
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia cargo run
-```
-
-### Vulkan ICD Selection
-
-```bash
-# List available ICDs
-ls /usr/share/vulkan/icd.d/
-
-# Force specific ICD
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json cargo run
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json cargo run
-```
-
-### System shaderc Workaround
-
-```bash
-# Ubuntu 24.04 workaround for incomplete libshaderc_combined.a
-mkdir -p /tmp/shaderc-lib
-ln -sf /usr/lib/x86_64-linux-gnu/libshaderc.so.1 /tmp/shaderc-lib/libshaderc_shared.so
-export SHADERC_LIB_DIR=/tmp/shaderc-lib
-cargo build
-```
-
-### Profiling with perf
-
-```bash
-# CPU profiling
-perf record -g cargo run --release
-perf report
-
-# With debug symbols
-cargo build --release
-perf record -g ./target/release/your_game
-```
-
----
-
-## Windows-Specific
-
-### MSVC Build (Recommended)
-
-```cmd
-:: Open "x64 Native Tools Command Prompt for VS 2022"
-cd C:\path\to\your_game
-cargo build --release
-
-:: Run
-target\release\your_game.exe
-```
-
-### Environment Setup
-
-```cmd
-:: Vulkan SDK (adjust version)
-set VULKAN_SDK=C:\VulkanSDK\1.3.283.0
-set PATH=%VULKAN_SDK%\Bin;%PATH%
-
-:: Or add to System Environment Variables permanently
-```
-
-### MinGW Cross-Compile (from Linux)
-
-```bash
-# On Linux host
-sudo apt-get install mingw-w64
-rustup target add x86_64-pc-windows-gnu
-
-# Build
-cargo build --target x86_64-pc-windows-gnu --release \
-  --no-default-features --features opengl
-
-# Binary at: target/x86_64-pc-windows-gnu/release/your_game.exe
-```
-
-### Test with Wine
-
-```bash
-# Install Wine
-sudo apt-get install wine64
-
-# Run Windows build on Linux
-wine64 target/x86_64-pc-windows-gnu/release/your_game.exe
-
-# With OpenGL backend
-SOLDATIK3D_BACKEND=opengl wine64 target/.../your_game.exe
-```
-
-### Visual Studio Debugging
-
-```cmd
-:: Generate VS project (requires cargo-vs)
-cargo install cargo-vs
-cargo vs
-
-:: Or create solution manually
-:: Open Developer Command Prompt
-cmake -G "Visual Studio 17 2022" -A x64 ..
-```
-
-### Windows-Specific Features
+`src/main.rs`:
 
 ```rust
-#[cfg(target_os = "windows")]
-fn windows_specific(ctx: &mut UpdateContext<'_>) {
-    // Raw input for high-precision mouse
-    // Available via winit's WindowEvent::RawInput
-    
-    // HDR support check
-    let caps = soldatik3d::PlatformCapabilities::detect();
-    if caps.hdr {
-        // Enable HDR output
-    }
-    
-    // Gamepad (XInput)
-    if let Some(pad) = ctx.input.gamepad(0) {
-        // Xbox controller layout
-    }
+fn main() -> anyhow::Result<()> {
+    my_game::run_desktop()
 }
 ```
 
-### Distribution
-
-```cmd
-:: Inno Setup installer
-iscc your_game.iss
-
-:: NSIS installer
-makensis your_game.nsi
-
-:: Simple zip
-powershell Compress-Archive -Path target\release\your_game.exe, assets\* -DestinationPath dist\your_game-windows.zip
-```
-
----
-
-## Android-Specific
-
-### NativeActivity Setup
+`src/lib.rs` exports both desktop and Android paths:
 
 ```rust
-// src/lib.rs
+pub fn run_desktop() -> anyhow::Result<()> {
+    runtime::run(MyGame::default())
+}
+
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub fn android_main(app: soldatik3d::winit::platform::android::activity::AndroidApp) {
-    soldatik3d::run_android(MyGame, app).unwrap();
+pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
+    if let Err(error) = runtime::run_android(MyGame::default(), app) {
+        eprintln!("game failed: {error:?}");
+    }
 }
 ```
 
-### Android Manifest (Auto-generated)
+`android_main` must be `#[unsafe(no_mangle)]` and public. Without it the
+`NativeActivity` cannot start the game.
 
-```xml
-<!-- android/gradle/app/src/main/AndroidManifest.xml -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.yourgame.game">
+## Conditional compilation
 
-    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
-
-    <application
-        android:hasCode="false"
-        android:label="@string/app_name"
-        android:icon="@mipmap/ic_launcher">
-
-        <meta-data
-            android:name="android.app.lib_name"
-            android:value="your_game" />
-
-        <activity
-            android:name="android.app.NativeActivity"
-            android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|density"
-            android:screenOrientation="landscape"
-            android:theme="@style/Theme.Soldatik3D.Fullscreen">
-
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="your_game" />
-
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-</manifest>
-```
-
-### Building Native Libraries
-
-```bash
-# Set up NDK
-export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
-
-# Add targets
-rustup target add aarch64-linux-android armv7-linux-androideabi
-
-# Build
-cargo build --target aarch64-linux-android --release \
-  --no-default-features --features opengl
-cargo build --target armv7-linux-androideabi --release \
-  --no-default-features --features opengl
-
-# Output:
-# target/aarch64-linux-android/release/libyour_game.so
-# target/armv7-linux-androideabi/release/libyour_game.so
-```
-
-### Building APK
-
-```bash
-# Using build script
-./build_apk.sh arm64-v8a --release
-./build_apk.sh armeabi-v7a --release
-
-# Or CLI tool
-soldatik3d apk arm64-v8a --release
-soldatik3d apk armeabi-v7a --release
-
-# Output:
-# apk/app-arm64-v8a-release.apk
-# apk/app-armeabi-v7a-release.apk
-```
-
-### Install & Run
-
-```bash
-# Connect device (USB debugging enabled)
-adb devices
-
-# Install
-adb install -r apk/app-arm64-v8a-release.apk
-
-# Launch
-adb shell am start -n com.yourgame.game/android.app.NativeActivity
-
-# View logs
-adb logcat -s "your_game:V" "android-activity:V" "NativeActivity:V"
-```
-
-### Android-Specific Code
+Use `cfg` for code that must not exist on other platforms:
 
 ```rust
+#[cfg(target_os = "linux")]
+const PLATFORM: &str = "Linux";
+
+#[cfg(target_os = "windows")]
+const PLATFORM: &str = "Windows";
+
 #[cfg(target_os = "android")]
-fn android_specific(ctx: &mut UpdateContext<'_>) {
-    // Touch input
-    for touch in ctx.input.touches() {
-        match touch.phase {
-            TouchPhase::Started => { /* tap/drag start */ }
-            TouchPhase::Moved => { /* drag */ }
-            TouchPhase::Ended => { /* tap end */ }
-            _ => {}
+const PLATFORM: &str = "Android";
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
+const PLATFORM: &str = "Unsupported";
+```
+
+For code that compiles everywhere, use `TargetOS` and `TargetArch`:
+
+```rust
+use runtime::{TargetArch, TargetOS};
+
+fn startup_message() -> String {
+    let os = TargetOS::current();
+    let arch = TargetArch::current();
+    format!("{} / {} / mobile: {}", os.name(), arch.name(), os.is_mobile())
+}
+```
+
+| `TargetOS` | `is_desktop` | `is_mobile` | `supports_vulkan` | `default_backend` |
+|------------|--------------|-------------|-------------------|-------------------|
+| `Linux` | yes | no | yes | Vulkan |
+| `Windows` | yes | no | yes | Vulkan |
+| `Android` | no | yes | no | OpenGL |
+| `Unknown` | no | no | no | Vulkan |
+
+`supports_vulkan` describes the **compiled engine**, not the device. Android
+devices may have Vulkan drivers, but the Android build contains only OpenGL ES.
+
+## Platform-specific controls
+
+Desktop controls use relative mouse motion; Android currently receives pointer
+events from the OS but touch controls are not implemented. Keep Android input
+simple and do not assume a keyboard:
+
+```rust
+impl Game for MyGame {
+    fn input_map(&self) -> InputMap {
+        InputMap::new()
+            .bind("forward", &[KeyCode::KeyW, KeyCode::ArrowUp])
+            .bind("jump", &[KeyCode::Space])
+    }
+
+    fn update(&mut self, ctx: &mut UpdateContext<'_>) {
+        #[cfg(not(target_os = "android"))]
+        {
+            let delta = ctx.input.mouse_delta();
+            if delta != Vec2::ZERO
+                && let Some(camera) = ctx.world.active_camera_mut()
+            {
+                camera.camera.yaw += delta.x * 0.0025;
+                camera.camera.pitch =
+                    (camera.camera.pitch - delta.y * 0.0025).clamp(-1.5, 1.5);
+            }
+        }
+
+        if ctx.input.action_down("forward") {
+            // shared movement code
         }
     }
-    
-    // Virtual keyboard (limited)
-    // Text input not directly supported in NativeActivity
-    
-    // Sensors (via JNI bridge)
-    // Not directly exposed, implement Java bridge
-    
-    // Lifecycle handled automatically by NativeActivity
-    // onPause/onResume -> game pauses/resumes
 }
 ```
 
-### Asset Loading
+Cursor capture is requested by `GameConfig::cursor_locked`. On Android there is
+no cursor, so the engine logs that capture is unavailable and continues.
+
+## Window and viewport
+
+Android starts fullscreen; desktop opens a resizable window. `ctx.viewport`
+contains the physical framebuffer size, which is the correct value for UI:
 
 ```rust
-// Assets packaged in APK automatically
-let texture = ctx.renderer.load_texture("assets/textures/albedo.png")?;
-
-// Note: assets/ directory packed into APK automatically by Gradle
-// Access same as desktop
-```
-
-### Performance Optimization
-
-```rust
-fn android_optimize(ctx: &mut UpdateContext<'_>) {
-    // Reduce shadow map resolution
-    // ctx.renderer.set_shadow_map_size(1024);
-    
-    // Lower SSAO resolution
-    // Disable bloom on low-end
-    // Reduce particle count
-    
-    // Check device capabilities
-    let caps = soldatik3d::PlatformCapabilities::detect();
-    if caps.max_texture_size < 4096 {
-        // Use lower resolution textures
-    }
+fn update(&mut self, ctx: &mut UpdateContext<'_>) {
+    let width = ctx.viewport.0 as f32;
+    let height = ctx.viewport.1 as f32;
+    ctx.ui.text(
+        &format!("{}x{}", ctx.viewport.0, ctx.viewport.1),
+        width - 120.0,
+        height - 28.0,
+        1.0,
+        [1.0; 4],
+    );
 }
 ```
 
-### Debugging
+Do not hardcode 1280×720 in UI layout. Use `ctx.viewport` or `ctx.ui.width()` /
+`ctx.ui.height()`.
+
+## Backend selection
+
+```rust
+use runtime::{BackendKind, GameConfig};
+
+let config = if runtime::TargetOS::current().is_mobile() {
+    GameConfig::default().with_backend(BackendKind::OpenGl)
+} else {
+    GameConfig::default().with_backend(BackendKind::Vulkan)
+};
+```
+
+On Android `BackendKind::Vulkan` is compiled out, so requesting it does not
+work. The runtime already defaults to OpenGL there. `SOLDATIK3D_BACKEND` can
+still force OpenGL on desktop:
 
 ```bash
-# Logcat filtering
-adb logcat -s "your_game:V" "android-activity:V" "NativeActivity:V"
-
-# GDB debugging
-# 1. Build with debug symbols
-cargo build --target aarch64-linux-android
-
-# 2. Start gdbserver on device
-adb shell run-as com.yourgame.game \
-  /data/local/tmp/gdbserver :5039 /data/app/~~/lib/arm64/libyour_game.so
-
-# 3. Forward port
-adb forward tcp:5039 tcp:5039
-
-# 4. Connect
-gdb-multiarch target/aarch64-linux-android/debug/your_game
-(gdb) target remote localhost:5039
-
-# Crash dumps
-adb shell ls /data/tombstones/
-adb pull /data/tombstones/tombstone_00 .
-$ANDROID_NDK_HOME/ndk-stack -sym target/aarch64-linux-android/debug/your_game -dump tombstone_00
+SOLDATIK3D_BACKEND=opengl cargo run
 ```
 
-### Play Store Publishing
+## Assets
+
+Desktop builds read files from the working directory. Android packages `assets/`
+inside the APK through `build.rs`, but the template does not expose an asset
+reader. If your game loads files:
+
+```rust
+#[cfg(not(target_os = "android"))]
+fn load_level() -> std::io::Result<String> {
+    std::fs::read_to_string("assets/level.txt")
+}
+```
+
+On Android, add `android-activity` asset APIs or embed the data with
+`include_str!` / `include_bytes!`. Embedding is the simplest portable option for
+small files and works on all three platforms.
+
+## Linux
 
 ```bash
-# Build App Bundle (AAB)
-cd android/gradle
-./gradlew bundleRelease
-
-# Output: app/build/outputs/bundle/release/app-release.aab
-
-# Signing (in build.gradle.kts)
-android {
-    signingConfigs {
-        create("release") {
-            storeFile = file("keystore.jks")
-            storePassword = "storepass"
-            keyAlias = "keyalias"
-            keyPassword = "keypass"
-        }
-    }
-    buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("release")
-        }
-    }
-}
+cargo build -p demo
+SOLDATIK3D_BACKEND=opengl cargo run -p demo
+./scripts/cross_build.sh linux --release
 ```
 
----
+The release package contains `demo` plus `libshaderc.so.1` and
+`libvulkan.so.1`. The binary uses an `$ORIGIN` rpath, so keep the files
+together.
 
-## Cross-Platform Patterns
+## Windows
 
-### Platform Detection
+Native MSVC:
 
-```rust
-fn platform_specific(ctx: &mut UpdateContext<'_>) {
-    #[cfg(target_os = "linux")]
-    { /* Linux-specific */ }
-    
-    #[cfg(target_os = "windows")]
-    { /* Windows-specific */ }
-    
-    #[cfg(target_os = "android")]
-    { /* Android-specific */ }
-    
-    // Runtime detection
-    let caps = soldatik3d::PlatformCapabilities::detect();
-    if caps.opengl_es {
-        // Mobile GPU path
-    }
-}
+```powershell
+cargo build -p demo
+cargo run -p demo
 ```
 
-### Input Abstraction
+Cross build from Linux:
 
-```rust
-fn handle_input(ctx: &mut UpdateContext<'_>) {
-    // Unified across platforms
-    let input = ctx.input;
-    
-    // Keyboard (all platforms)
-    if input.is_key_pressed(KeyCode::W) { move_forward(); }
-    
-    // Mouse (desktop only)
-    #[cfg(not(target_os = "android"))]
-    {
-        let delta = input.mouse_delta();
-        rotate_camera(delta);
-    }
-    
-    // Touch (Android only)
-    #[cfg(target_os = "android")]
-    for touch in input.touches() {
-        handle_touch(touch);
-    }
-    
-    // Gamepad (all platforms)
-    if let Some(pad) = input.gamepad(0) {
-        let stick = pad.axis(GamepadAxis::LeftStickX);
-    }
-}
+```bash
+sudo apt-get install mingw-w64
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu \
+  --no-default-features --features opengl
 ```
 
-### Asset Loading
+Windows GNU builds are OpenGL-only. A native MSVC build supports both backends.
 
-```rust
-fn load_assets(ctx: &mut UpdateContext<'_>) {
-    // Same paths work on all platforms
-    // Android: assets/ packed in APK
-    // Desktop: assets/ relative to working dir
-    
-    let texture = ctx.renderer.load_texture("assets/textures/albedo.png")?;
-    let model = ctx.renderer.load_model("assets/models/character.glb")?;
-}
+From a game project:
+
+```bash
+s3d build windows --release
+s3d run windows --release   # requires Wine on Linux
 ```
 
----
+## Android
 
-*See [Platform Guides](guides/) for detailed setup instructions, or [API Reference](api/platform.md) for platform API documentation.*
+```bash
+export ANDROID_NDK_HOME=$HOME/android-ndk-r26c
+export ANDROID_SDK_ROOT=$HOME/Android/Sdk
+
+./build_apk.sh arm64-v8a
+adb install -r apk/app-arm64-v8a-debug.apk
+adb shell am start -n com.soldatik3d.my_game/android.app.NativeActivity
+```
+
+The application ID is set in `build_apk.sh`:
+
+```bash
+export SOLDATIK3D_ANDROID_APP_ID="com.soldatik3d.$LIB_NAME"
+export SOLDATIK3D_ANDROID_APP_NAME="$GAME_NAME"
+```
+
+Change those exports to customize the package and label. The library name must
+match the Cargo `[lib] name`.
+
+For log output:
+
+```bash
+adb logcat -s Soldatik3D RustStdoutStderr AndroidRuntime
+```
+
+## Platform-specific dependencies
+
+Put Android-only dependencies in a target table:
+
+```toml
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.21"
+```
+
+The template already includes them. Desktop builds ignore the table.
+
+## Feature flags
+
+```toml
+[features]
+default = ["vulkan", "opengl"]
+vulkan = ["runtime/vulkan"]
+opengl = ["runtime/opengl"]
+```
+
+Android scripts pass `--no-default-features --features opengl`. MinGW builds do
+the same. If you do not need Vulkan, removing it on desktop also removes the
+shaderc build dependency.
+
+## Related
+
+- [Linux guide](../guides/linux.md)
+- [Windows guide](../guides/windows.md)
+- [Android guide](../guides/android.md)
+- [Cross-compilation](../guides/cross-compilation.md)
+- [Platform API](../api/platform.md)

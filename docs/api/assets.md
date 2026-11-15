@@ -1,394 +1,148 @@
-# Assets API Reference
+# Assets API
 
-Complete API documentation for asset loading and management.
-
-## Texture Loading
+The `assets` crate owns CPU-side data that does not depend on a graphics API:
+texture pixels, the built-in font atlas and a procedural environment cubemap.
+`runtime` re-exports the public helpers.
 
 ```rust
-impl Renderer {
-    /// Load texture from file (PNG, JPG, KTX)
-    pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle>;
-    
-    /// Create texture from raw data
-    pub fn create_texture(
-        &mut self,
-        data: &[u8],
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-    ) -> Result<TextureHandle>;
-    
-    /// Update existing texture
-    pub fn update_texture(&mut self, handle: TextureHandle, data: &[u8]) -> Result<()>;
-    
-    /// Get texture info
-    pub fn texture_info(&self, handle: TextureHandle) -> Option<TextureInfo>;
-}
-
-pub enum TextureFormat {
-    R8,
-    RG8,
-    RGB8,
-    RGBA8,
-    RGBA16F,
-    RGBA32F,
-    Depth24,
-    Depth32F,
-}
+use runtime::{TextureData, font_atlas_rgba8, generate_environment_cubemap};
 ```
 
-### TextureHandle
+The font layout constants live in the `assets` crate when you depend on it
+directly:
 
 ```rust
-pub struct TextureHandle(pub u32);
-
-impl TextureHandle {
-    pub fn is_valid(&self) -> bool { self.0 != 0 }
-}
+use assets::{
+    FONT_ATLAS_SIZE, FONT_CELL_SIZE, FONT_GLYPH_COLUMNS, FONT_GLYPH_HEIGHT,
+    FONT_GLYPH_WIDTH,
+};
 ```
 
-### TextureInfo
+## `TextureData`
+
+RGBA8 pixel data used as the scene material's albedo texture.
 
 ```rust
-pub struct TextureInfo {
+pub struct TextureData {
     pub width: u32,
     pub height: u32,
-    pub format: TextureFormat,
-    pub mip_levels: u32,
+    pub pixels: Vec<u8>,
+}
+
+impl TextureData {
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self;
+    pub fn white() -> Self;
+    pub fn from_rgb8(width: u32, height: u32, rgb: &[u8]) -> Self;
 }
 ```
 
-### Usage
+| Constructor | Notes |
+|-------------|-------|
+| `new` | Panics unless `pixels.len() == width * height * 4` |
+| `white` | 1×1 opaque white, a neutral default |
+| `from_rgb8` | Expands each RGB triple to RGBA with alpha 255 |
+
+The engine uploads the material texture once when the renderer is created.
+There is no texture array, no per-mesh material and no runtime texture update.
+
+### Procedural texture
 
 ```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    // Load from file (relative to working directory or assets/)
-    let texture = ctx.renderer.load_texture("assets/textures/albedo.png")?;
-    
-    // Or create from raw data
-    let texture = ctx.renderer.create_texture(
-        &raw_pixels,
-        512, 512,
-        TextureFormat::RGBA8,
-    )?;
-    
-    // Use in material
-    let material = Material::default()
-        .with_albedo_texture(texture);
-}
-```
-
----
-
-## Model Loading
-
-```rust
-impl Renderer {
-    /// Load model from GLTF/GLB file
-    pub fn load_model(&mut self, path: &str) -> Result<ModelHandle>;
-    
-    /// Load model with materials
-    pub fn load_model_with_materials(&mut self, path: &str) 
-        -> Result<(ModelHandle, Vec<Material>)>;
-}
-
-pub struct ModelHandle(pub u32);
-
-pub struct Model {
-    pub meshes: Vec<MeshHandle>,
-    pub materials: Vec<Material>,
-    pub nodes: Vec<ModelNode>,
-    pub animations: Vec<Animation>,
-}
-
-pub struct ModelNode {
-    pub name: String,
-    pub mesh: Option<MeshHandle>,
-    pub transform: Transform,
-    pub children: Vec<usize>,
-}
-```
-
-### Usage
-
-```rust
-fn create_world(&mut self) -> World {
-    let mut world = World::default();
-    
-    // Load model
-    let model = ctx.renderer.load_model("assets/models/character.glb")?;
-    
-    // Or with materials
-    let (model_handle, materials) = ctx.renderer.load_model_with_materials(
-        "assets/models/scene.gltf"
-    )?;
-    
-    // Spawn each mesh
-    let model = ctx.renderer.get_model(model_handle)?;
-    for node in &model.nodes {
-        if let Some(mesh_handle) = node.mesh {
-            let material = node.mesh.map(|m| materials[m]).unwrap_or_default();
-            world.spawn_mesh(
-                mesh_handle,
-                node.transform,
-                material,
-            );
+fn checkerboard(size: u32) -> TextureData {
+    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
+    let cell = (size / 8).max(1);
+    for y in 0..size {
+        for x in 0..size {
+            let light = ((x / cell) + (y / cell)) % 2 == 0;
+            let value = if light { 220 } else { 40 };
+            pixels.extend_from_slice(&[value, value, value, 255]);
         }
     }
-    
-    world
+    TextureData::new(size, size, pixels)
 }
 ```
 
----
+### Loading a PNG
 
-## Shader Loading
+Image decoding is not part of the engine. Add the `image` crate to the game and
+convert its buffer:
+
+```toml
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+```
 
 ```rust
-impl Renderer {
-    /// Load shader from file
-    pub fn load_shader(&mut self, path: &str) -> Result<ShaderHandle>;
-    
-    /// Create shader from source strings
-    pub fn create_shader(
-        &mut self,
-        vertex_src: &str,
-        fragment_src: &str,
-    ) -> Result<ShaderHandle>;
-}
+use runtime::TextureData;
 
-pub struct ShaderHandle(pub u32);
-```
-
-### Shader Sources
-
-**Vulkan (SPIR-V):** Pre-compiled `.spv` files or GLSL compiled at runtime via `shaderc`.
-
-**OpenGL:** GLSL source files (`.vert`, `.frag`).
-
-```rust
-// Load from file (auto-detects backend)
-let shader = ctx.renderer.load_shader("assets/shaders/custom.frag")?;
-
-// Or create from source
-let shader = ctx.renderer.create_shader(
-    include_str!("shaders/custom.vert"),
-    include_str!("shaders/custom.frag"),
-)?;
-```
-
----
-
-## Asset Directory Structure
-
-```
-assets/
-├── textures/
-│   ├── albedo.png           # Base color
-│   ├── normal.png           # Normal map
-│   ├── roughness.png        # Roughness map
-│   ├── metallic.png         # Metallic map
-│   ├── ao.png               # Ambient occlusion
-│   ├── emissive.png         # Emission map
-│   └── skybox/
-│       ├── px.ktx, nx.ktx
-│       ├── py.ktx, ny.ktx
-│       ├── pz.ktx, nz.ktx
-├── models/
-│   ├── character.glb        # GLTF binary (recommended)
-│   ├── character.gltf       # GLTF JSON + .bin + textures
-│   ├── environment.glb
-│   └── props/
-│       ├── crate.glb
-│       └── barrel.glb
-├── shaders/
-│   ├── custom.vert          # Vertex shader
-│   ├── custom.frag          # Fragment shader
-│   └── post/
-│       ├── bloom.frag
-│       └── ssao.frag
-├── fonts/
-│   └── font.png             # Bitmap font atlas
-├── audio/                   # Not yet supported in engine
-│   ├── music.ogg
-│   └── sfx/
-└── data/
-    ├── level1.json          # Level data
-    └── config.toml          # Game config
-```
-
----
-
-## Supported Formats
-
-### Textures
-
-| Format | Support | Notes |
-|--------|---------|-------|
-| PNG | ✅ Full | Lossless, alpha support |
-| JPEG | ✅ Full | Lossy, no alpha |
-| KTX/KTX2 | ✅ Full | GPU-compressed (BC7, ASTC, ETC2) |
-| DDS | ⚠️ Partial | Limited support |
-| TGA | ❌ | Use PNG |
-| BMP | ❌ | Use PNG |
-| HDR/EXR | ⚠️ Partial | For HDR skyboxes |
-
-### Models
-
-| Format | Support | Notes |
-|--------|---------|-------|
-| GLTF 2.0 (.gltf) | ✅ Full | JSON + .bin + textures |
-| GLB 2.0 (.glb) | ✅ Full | Binary, self-contained |
-| OBJ | ❌ | Use GLTF |
-| FBX | ❌ | Use GLTF |
-| COLLADA | ❌ | Use GLTF |
-| STL | ❌ | Use GLTF |
-
-### GLTF Features Supported
-
-| Feature | Support |
-|---------|---------|
-| Meshes (primitives) | ✅ |
-| Materials (PBR) | ✅ |
-| Textures (baseColor, normal, metallicRoughness, occlusion, emissive) | ✅ |
-| Skinning/Animation | ⚠️ Partial |
-| Morph Targets | ❌ |
-| Cameras | ❌ |
-| Lights | ❌ |
-| Extensions (KHR_*) | ⚠️ Partial |
-
----
-
-## Font Atlas
-
-```rust
-pub fn font_atlas_rgba8() -> Vec<u8> {
-    // Returns 128x128 RGBA8 bitmap
-    // 95 printable ASCII chars (32-126)
-    // 16x6 grid, 8x16 per glyph + 1px padding
+fn load_png(path: &str) -> anyhow::Result<TextureData> {
+    let image = image::open(path)?.to_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(TextureData::new(width, height, image.into_raw()))
 }
 ```
 
-### Custom Font
+Use the exact dimensions and an RGBA8 buffer. Textures are sampled with
+repeating UVs by the engine shaders.
+
+## Font atlas
+
+The engine ships a 128×128 bitmap font atlas covering printable ASCII
+(`0x20..=0x7E`). Each glyph occupies an 8×8 cell in a 16-column grid; only the
+top-left 5×7 pixels contain ink.
 
 ```rust
-// Use ab_glyph or fontdue to rasterize TTF/OTF
-// Then create texture:
-let texture = ctx.renderer.create_texture(
-    &atlas_pixels,
-    512, 512,
-    TextureFormat::RGBA8,
-)?;
+pub const FONT_ATLAS_SIZE: u32 = 128;
+pub const FONT_CELL_SIZE: u32 = 8;
+pub const FONT_GLYPH_WIDTH: u32 = 5;
+pub const FONT_GLYPH_HEIGHT: u32 = 7;
+pub const FONT_GLYPH_COLUMNS: u32 = 16;
+
+pub fn font_atlas_rgba8() -> Vec<u8>;
 ```
 
----
+`font_atlas_rgba8` returns `128 * 128 * 4` bytes. The `ui` crate uses it through
+`UiDrawList::text`, so games rarely call it directly. Characters outside
+printable ASCII are skipped by the text renderer.
 
-## Environment Cubemap
+## Environment cubemap
 
 ```rust
-pub fn generate_environment_cubemap(size: u32) -> Vec<f32> {
-    // Procedural sky (sun, atmosphere)
-    // Returns RGBA32F: 6 * size * size * 4 floats
-    // Face order: +X, -X, +Y, -Y, +Z, -Z
-}
+pub fn generate_environment_cubemap(size: u32) -> Vec<f32>;
 ```
 
-### Usage
+Generates six `size × size` RGBA32F faces in `+X, -X, +Y, -Y, +Z, -Z` order.
+The sky has a horizon gradient, a sun disk and a sun glow, and is used as the
+default image-based-lighting environment by both backends.
+
+The buffer length is `size * size * 6 * 4` floats. A small size (32 or 64) is
+enough for diffuse IBL; larger sizes sharpen specular reflections.
+
+## Where assets live
+
+| Build | Location |
+|-------|----------|
+| Desktop | Working directory; the game reads files at runtime |
+| Android | `assets/` is copied into the APK by `build.rs` and Gradle |
+| Generated project | `assets/` at the project root |
+
+The engine itself has no asset manager, virtual filesystem or hot reload. If a
+game needs both desktop and Android loading, put shared files under `assets/`
+and use platform-specific code for the path:
 
 ```rust
-fn create_world(&mut self) -> World {
-    let mut world = World::default();
-    
-    // Generate procedural sky
-    let cubemap_data = generate_environment_cubemap(256);
-    
-    // Create cubemap texture (handled internally by renderer)
-    // Used for IBL (Image-Based Lighting)
-    
-    world
-}
+#[cfg(target_os = "android")]
+const ASSET_ROOT: &str = "";       // Android asset manager, not a filesystem path
+#[cfg(not(target_os = "android"))]
+const ASSET_ROOT: &str = "assets/";
 ```
 
----
+The generated template currently copies assets into the APK but does not read
+them back through `AAssetManager`; add the `android-activity` asset APIs if your
+game needs runtime asset loading on Android.
 
-## Asset Loading Best Practices
+## Related
 
-### 1. Load Once, Use Many
-
-```rust
-struct MyGame {
-    textures: HashMap<String, TextureHandle>,
-    models: HashMap<String, ModelHandle>,
-}
-
-impl Game for MyGame {
-    fn create_world(&mut self) -> World {
-        // Load all assets once
-        self.textures.insert("player".into(), ctx.renderer.load_texture("assets/player.png")?);
-        self.models.insert("enemy".into(), ctx.renderer.load_model("assets/enemy.glb")?);
-        
-        // Reuse handles
-        world.spawn_mesh(
-            self.models["enemy"].meshes[0],
-            transform,
-            Material::default().with_albedo_texture(self.textures["player"]),
-        );
-        
-        World::default()
-    }
-}
-```
-
-### 2. Async Loading (Advanced)
-
-```rust
-use std::sync::mpsc;
-
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    if self.loading {
-        if let Ok(asset) = self.rx.try_recv() {
-            self.assets.push(asset);
-            self.loading = false;
-        }
-    } else if ctx.input.is_key_just_pressed(KeyCode::L) {
-        let (tx, rx) = mpsc::channel();
-        self.rx = rx;
-        std::thread::spawn(move || {
-            let texture = heavy_load();
-            tx.send(texture).unwrap();
-        });
-        self.loading = true;
-    }
-}
-```
-
-### 3. Hot Reloading (Development)
-
-```bash
-# Not built-in, but can be implemented:
-# Watch assets/ directory for changes
-# Reload texture/model on file modification
-```
-
----
-
-## Asset Path Resolution
-
-| Path Type | Resolution |
-|-----------|------------|
-| `assets/texture.png` | Relative to working directory |
-| `./texture.png` | Relative to working directory |
-| `/absolute/path.png` | Absolute path |
-| `texture.png` | Working directory |
-
-### Android Assets
-
-```bash
-# Assets packaged in APK automatically
-# Access same way:
-ctx.renderer.load_texture("assets/textures/albedo.png")?
-```
-
----
-
-*See [Rendering API](rendering.md) for `Material` and `TextureHandle` usage, or [Getting Started](getting-started/first-game.md) for asset loading examples.*
+- [Scene API](scene.md)
+- [UI API](ui.md)
+- [Project structure](../getting-started/project-structure.md)
