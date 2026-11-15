@@ -4,10 +4,18 @@
 //! The draw list is backend-neutral: it produces vertices, and each renderer
 //! uploads them with its own pipeline. Font atlas data lives in the `assets`
 //! crate so text and glyph packing stay independent from draw commands.
+//!
+//! The `widgets` module provides touch-friendly UI components:
+//! buttons, toggles, sliders, progress bars, dropdowns, virtual joystick,
+//! touch camera control, scroll panels, and layout helpers.
 
 use assets::{
     FONT_ATLAS_SIZE, FONT_CELL_SIZE, FONT_GLYPH_COLUMNS, FONT_GLYPH_HEIGHT, FONT_GLYPH_WIDTH,
 };
+
+pub mod widgets;
+pub use widgets::{Interaction, PointerState, Rect, Theme, UiContext, WidgetId, widget_id};
+pub use widgets::{TouchInputProvider, TouchStateProvider};
 
 /// Horizontal distance between two glyph origins in the built-in font.
 const GLYPH_ADVANCE: f32 = FONT_GLYPH_WIDTH as f32 + 1.0;
@@ -105,6 +113,11 @@ impl UiDrawList {
                 uv: [0.0, 0.0],
             },
         ]);
+    }
+
+    pub fn rect_rounded(&mut self, x: f32, y: f32, w: f32, h: f32, _radius: f32, color: [f32; 4]) {
+        // For now, draw as regular rect. Proper rounded corners need more vertices.
+        self.rect(x, y, w, h, color);
     }
 
     pub fn text(&mut self, text: &str, mut x: f32, y: f32, scale: f32, color: [f32; 4]) {

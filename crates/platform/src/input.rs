@@ -240,3 +240,54 @@ impl Input {
         });
     }
 }
+
+/// Trait implementation for UI widget system to access touch/mouse input.
+impl ui::TouchInputProvider for Input {
+    type Touch = TouchState;
+
+    fn first_touch(&self) -> Option<&Self::Touch> {
+        self.first_touch()
+    }
+
+    fn touch(&self, id: u64) -> Option<&Self::Touch> {
+        self.touch(id)
+    }
+
+    fn touches(&self) -> &[Self::Touch] {
+        self.touches()
+    }
+
+    fn primary_clicked(&self) -> bool {
+        self.primary_clicked()
+    }
+
+    fn mouse_delta(&self) -> Vec2 {
+        self.mouse_delta()
+    }
+
+    fn cursor_position(&self) -> Vec2 {
+        self.cursor_position()
+    }
+}
+
+impl ui::TouchStateProvider for TouchState {
+    fn position(&self) -> Vec2 {
+        self.position
+    }
+
+    fn prev_position(&self) -> Vec2 {
+        self.prev_position
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn started(&self) -> bool {
+        self.started
+    }
+
+    fn ended(&self) -> bool {
+        self.ended
+    }
+}

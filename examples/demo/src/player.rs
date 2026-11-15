@@ -94,6 +94,17 @@ impl Player {
         self.velocity.z = 0.0;
         self.bob_intensity = 0.0;
     }
+
+    /// Adds to the camera yaw (for touch camera control).
+    pub fn add_yaw(&mut self, delta: f32) {
+        self.camera.yaw += delta;
+    }
+
+    /// Adds to the camera pitch (for touch camera control).
+    pub fn add_pitch(&mut self, delta: f32) {
+        self.camera.pitch =
+            (self.camera.pitch + delta).clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+    }
 }
 
 /// Default action bindings for the demo player.
@@ -236,6 +247,136 @@ impl Player {
                 input.action_down("jump") || virtual_controls.is_some_and(|vc| vc.jump_pressed());
             if self.on_ground && jump_pressed {
                 self.velocity.y = JUMP_FORCE;
+                self.on_ground = false;
+            }
+            self.apply_movement(dt, colliders, true);
+        }
+
+        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
+        let speed_ratio = (horizontal_speed / 12.0).clamp(0.0, 1.0);
+        let target_fov = 45.0 + speed_ratio.powi(3) * 20.0;
+        self.current_fov += (target_fov - self.current_fov) * dt * 8.0;
+        self.camera.fov_y_degrees = self.current_fov;
+
+        let target_bob = if self.on_ground {
+            (horizontal_speed / 6.0).min(1.0)
+        } else {
+            0.0
+        };
+        self.bob_intensity += (target_bob - self.bob_intensity) * dt * 10.0;
+        if self.on_ground && horizontal_speed > 0.1 {
+            self.bob_time += dt * (horizontal_speed * 0.8 + 1.0);
+        }
+    }
+
+    /// Updates the player with mobile virtual input (joystick vector, jump, fly toggle).
+    pub fn update_with_virtual_mobile(
+        &mut self,
+        dt: f32,
+        input: &Input,
+        colliders: &[Aabb],
+        move_input: Vec3,
+        jump_pressed: bool,
+        fly_toggle: bool,
+    ) {
+        if fly_toggle {
+            self.is_flying = !self.is_flying;
+            self.velocity = Vec3::ZERO;
+        }
+
+        // Handle mouse look (desktop)
+        let mouse = input.mouse_delta();
+        if mouse.length_squared() > 0.0 {
+            self.camera.yaw += mouse.x * MOUSE_SENSITIVITY;
+            self.camera.pitch -= mouse.y * MOUSE_SENSITIVITY;
+            self.camera.pitch = self
+                .camera
+                .pitch
+                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+        }
+
+        // Keyboard rotation (for desktop without mouse capture)
+        let rotation_speed = 2.0 * dt;
+        if input.action_down("camera_rot_left") {
+            self.camera.yaw -= rotation_speed;
+        }
+        if input.action_down("camera_rot_right") {
+            self.camera.yaw += rotation_speed;
+        }
+        if input.action_down("camera_rot_up") {
+            self.camera.pitch += rotation_speed;
+        }
+        if input.action_down("camera_rot_down") {
+            self.camera.pitch -= rotation_speed;
+        }
+        self.camera.pitch = self
+            .camera
+            .pitch
+            .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+
+        // Determine movement input from keyboard or virtual joystick
+        let move_forward = input.action_down("move_forward") || move_input.z < -0.1;
+        let move_backward = input.action_down("move_backward") || move_input.z > 0.1;
+        let move_left = input.action_down("move_left") || move_input.x < -0.1;
+        let move_right = input.action_down("move_right") || move_input.x > 0.1;
+
+        let sprinting = input.action_down("sprint");
+        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
+
+        let max_speed = if self.is_flying {
+            if sprinting { 24.0 } else { 12.0 }
+        } else if self.on_ground {
+            if sprinting { 12.0 } else { 6.0 }
+        } else {
+            horizontal_speed.max(6.0)
+        };
+
+        let forward = Vec3::new(self.camera.yaw.cos(), 0.0, self.camera.yaw.sin()).normalize();
+        let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
+
+        let mut wish_direction = Vec3::ZERO;
+        if move_forward {
+            wish_direction += forward;
+        }
+        if move_backward {
+            wish_direction -= forward;
+        }
+        if move_left {
+            wish_direction -= right;
+        }
+        if move_right {
+            wish_direction += right;
+        }
+        if wish_direction.length_squared() > 0.0 {
+            wish_direction = wish_direction.normalize();
+        }
+
+        if self.is_flying {
+            let target_velocity = wish_direction * max_speed;
+            let blend = (10.0 * dt).clamp(0.0, 1.0);
+            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
+            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
+
+            if jump_pressed {
+                self.velocity.y += 60.0 * dt;
+            }
+            if input.action_down("crouch") {
+                self.velocity.y -= 60.0 * dt;
+            }
+            self.velocity.y *= (1.0 - 5.0 * dt).max(0.0);
+
+            self.apply_movement(dt, colliders, false);
+            self.on_ground = false;
+        } else {
+            let target_velocity = wish_direction * max_speed;
+            let acceleration = if self.on_ground { 15.0 } else { 3.0 };
+            let blend = (acceleration * dt).clamp(0.0, 1.0);
+            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
+            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
+            self.velocity.y -= crate::player::GRAVITY * dt;
+
+            if self.on_ground && jump_pressed {
+                self.velocity.y = crate::player::JUMP_FORCE;
                 self.on_ground = false;
             }
             self.apply_movement(dt, colliders, true);

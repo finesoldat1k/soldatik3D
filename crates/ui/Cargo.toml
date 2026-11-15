@@ -9,3 +9,4 @@ description = "Immediate-mode 2D draw list of the Soldatik3D engine"
 [dependencies]
 assets = { path = "../assets" }
 bytemuck = { workspace = true }
+glam = { workspace = true }

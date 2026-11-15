@@ -470,7 +470,10 @@ name = "demo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glam",
+ "platform",
  "runtime",
+ "ui",
 ]
 
 [[package]]
@@ -1409,6 +1412,7 @@ dependencies = [
  "anyhow",
  "glam",
  "render",
+ "ui",
  "winit",
 ]
 
@@ -2035,6 +2039,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "bytemuck",
+ "glam",
 ]
 
 [[package]]

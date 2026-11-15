@@ -19,4 +19,7 @@ opengl = ["runtime/opengl"]
 
 [dependencies]
 runtime = { workspace = true }
+ui = { workspace = true }
+platform = { workspace = true }
+glam = { workspace = true }
 anyhow = { workspace = true }
