@@ -5,7 +5,14 @@
 //! uploads them with its own pipeline. Font atlas data lives in the `assets`
 //! crate so text and glyph packing stay independent from draw commands.
 //!
-//! The `widgets` module provides touch-friendly UI components:
+//! The `widget_system` module provides a comprehensive touch-friendly UI system:
+//! - Hybrid immediate/retained mode: immediate API builds persistent widget tree
+//! - Flexbox-style layout engine
+//! - Component-based architecture (ECS-style)
+//! - Hit-test + bubbling event system
+//! - Built-in widgets: Button, Label, Container, Dropdown, VirtualJoystick, TouchCamera, ScrollPanel
+//!
+//! The `widgets` module (legacy) provides immediate-mode components:
 //! buttons, toggles, sliders, progress bars, dropdowns, virtual joystick,
 //! touch camera control, scroll panels, and layout helpers.
 
@@ -13,8 +20,51 @@ use assets::{
     FONT_ATLAS_SIZE, FONT_CELL_SIZE, FONT_GLYPH_COLUMNS, FONT_GLYPH_HEIGHT, FONT_GLYPH_WIDTH,
 };
 
+pub mod widget_system;
 pub mod widgets;
-pub use widgets::{Interaction, PointerState, Rect, Theme, UiContext, WidgetId, widget_id};
+
+// Re-export widget_system as the primary API
+pub use widget_system::{
+    WidgetId,
+    Rect,
+    LayoutProps,
+    FlexDirection,
+    AlignItems,
+    JustifyContent,
+    FlexBasis,
+    ComputedLayout,
+    PointerState,
+    InteractionEvent,
+    EventPropagation,
+    Component,
+    ComponentStore,
+    WidgetState,
+    Theme,
+    WidgetNode,
+    Widget,
+    UpdateContext,
+    LayoutConstraints,
+    InputEvent,
+    DrawList,
+    LayoutEngine,
+    EventDispatcher,
+    Ui,
+    UiFrame,
+    // Widgets
+    Button, ButtonStyle, ButtonComponent,
+    Container, ContainerStyle,
+    Label, TextAlignment,
+    Dropdown, DropdownStyle, DropdownComponent,
+    VirtualJoystick, VirtualJoystickStyle, VirtualJoystickComponent,
+    TouchCamera, TouchCameraStyle, TouchCameraComponent,
+    ScrollPanel, ScrollPanelStyle, ScrollPanelComponent,
+    // Builders
+    ButtonBuilder, ContainerBuilder, LabelBuilder, DropdownBuilder,
+    VirtualJoystickBuilder, TouchCameraBuilder, ScrollPanelBuilder,
+};
+
+// Re-export legacy widgets for backward compatibility
+pub use widgets::{Interaction, PointerState as LegacyPointerState, Rect as LegacyRect, Theme as LegacyTheme, UiContext, WidgetId as LegacyWidgetId, widget_id};
 pub use widgets::{TouchInputProvider, TouchStateProvider};
 
 /// Horizontal distance between two glyph origins in the built-in font.
@@ -200,5 +250,24 @@ impl UiDrawList {
 
     fn to_ndc_y(&self, y: f32) -> f32 {
         (y / self.height) * 2.0 - 1.0
+    }
+}
+
+// Implement DrawList trait for UiDrawList to work with widget_system
+impl widget_system::DrawList for UiDrawList {
+    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        self.rect(x, y, w, h, color);
+    }
+
+    fn rect_rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: [f32; 4]) {
+        self.rect_rounded(x, y, w, h, radius, color);
+    }
+
+    fn text(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
+        self.text(text, x, y, scale, color);
+    }
+
+    fn text_width(&self, text: &str, scale: f32) -> f32 {
+        Self::text_width(text, scale)
     }
 }
