@@ -360,6 +360,6 @@ jobs:
           files: |
             release/*.tar.gz
             release/*.zip
-            release/*.apk
+            demo/*.apk
           fail_on_unmatched_files: true
           prerelease: ${{ github.event.release.prerelease }}
