@@ -7,6 +7,7 @@ use runtime::{
 
 use crate::debug_ui::DebugMenu;
 use crate::player::{Player, default_input_map};
+use crate::virtual_joystick::VirtualControls;
 use crate::world;
 
 const GAME_COMMANDS: &[(&str, &str)] = &[
@@ -27,6 +28,7 @@ pub struct DemoGame {
     player: Player,
     colliders: Vec<Aabb>,
     menu: DebugMenu,
+    virtual_controls: VirtualControls,
     fps: f32,
     frame_ms: f32,
     fps_accumulator: f32,
@@ -40,6 +42,7 @@ impl DemoGame {
             player: Player::new(),
             colliders: Vec::new(),
             menu: DebugMenu::new(),
+            virtual_controls: VirtualControls::new(),
             fps: 0.0,
             frame_ms: 0.0,
             fps_accumulator: 0.0,
@@ -175,11 +178,26 @@ impl Game for DemoGame {
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
         self.menu.handle_shortcuts(ctx.input);
 
+        let screen_size = Vec3::new(ctx.viewport.0 as f32, ctx.viewport.1 as f32, 0.0);
+        let is_mobile = cfg!(target_os = "android");
+
+        // Update virtual controls on mobile
+        if is_mobile {
+            self.virtual_controls
+                .update(ctx.input, screen_size.truncate());
+        }
+
         let player_active = self
             .player_camera
             .is_some_and(|id| ctx.world.active_camera_id() == Some(id));
-        if player_active && ctx.input.cursor_captured() && !ctx.console_open {
-            self.player.update(ctx.dt, ctx.input, &self.colliders);
+        if player_active && (ctx.input.cursor_captured() || is_mobile) && !ctx.console_open {
+            let virtual_controls = if is_mobile {
+                Some(&self.virtual_controls)
+            } else {
+                None
+            };
+            self.player
+                .update_with_virtual(ctx.dt, ctx.input, &self.colliders, virtual_controls);
             self.sync_player_camera(ctx.world);
         } else {
             self.player.stop();
@@ -205,5 +223,10 @@ impl Game for DemoGame {
             self.frame_ms,
             ctx.console_open,
         );
+
+        // Draw virtual controls on mobile
+        let screen_size = Vec3::new(ctx.viewport.0 as f32, ctx.viewport.1 as f32, 0.0);
+        self.menu
+            .draw_virtual_controls(ctx.ui, &mut self.virtual_controls, screen_size);
     }
 }

@@ -4,6 +4,8 @@ use runtime::glam::Vec3;
 use runtime::winit::keyboard::KeyCode;
 use runtime::{DebugView, Input, RenderStats, UiDrawList};
 
+use crate::virtual_joystick::VirtualControls;
+
 struct Button {
     x: f32,
     y: f32,
@@ -228,5 +230,18 @@ impl DebugMenu {
         // VSync status
         ui.rect(20.0, 420.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
         ui.text("F5: VSync Toggle", 20.0, 425.0, 1.2, accent);
+    }
+
+    /// Draws virtual touch controls for mobile platforms.
+    pub fn draw_virtual_controls(
+        &self,
+        ui: &mut UiDrawList,
+        virtual_controls: &mut VirtualControls,
+        screen_size: Vec3,
+    ) {
+        let is_mobile = cfg!(target_os = "android");
+        if is_mobile {
+            virtual_controls.draw(ui, screen_size.truncate());
+        }
     }
 }

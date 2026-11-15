@@ -8,6 +8,7 @@
 pub mod debug_ui;
 pub mod demo;
 pub mod player;
+pub mod virtual_joystick;
 pub mod world;
 
 pub use demo::DemoGame;

@@ -48,6 +48,32 @@ pub struct Input {
     text: String,
     /// Active action bindings for this frame.
     action_map: InputMap,
+    /// Touch input state for mobile platforms.
+    touches: Vec<TouchState>,
+    /// Previous frame touches for gesture detection.
+    prev_touches: Vec<TouchState>,
+}
+
+/// Represents a single touch point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchState {
+    /// Unique identifier for this touch point (persists across frames).
+    pub id: u64,
+    /// Current position in physical pixels.
+    pub position: Vec2,
+    /// Previous frame position in physical pixels.
+    pub prev_position: Vec2,
+    /// Whether this touch started this frame.
+    pub started: bool,
+    /// Whether this touch ended this frame.
+    pub ended: bool,
+}
+
+impl TouchState {
+    /// Returns the delta movement since the previous frame.
+    pub fn delta(&self) -> Vec2 {
+        self.position - self.prev_position
+    }
 }
 
 impl Input {
@@ -149,6 +175,50 @@ impl Input {
         self.action_map = map;
     }
 
+    /// Returns all active touches for the current frame.
+    pub fn touches(&self) -> &[TouchState] {
+        &self.touches
+    }
+
+    /// Returns the touch with the given ID if it's currently active.
+    pub fn touch(&self, id: u64) -> Option<&TouchState> {
+        self.touches.iter().find(|t| t.id == id)
+    }
+
+    /// Returns the first active touch, if any.
+    pub fn first_touch(&self) -> Option<&TouchState> {
+        self.touches.first()
+    }
+
+    /// Adds a new touch point.
+    pub fn add_touch(&mut self, id: u64, position: Vec2) {
+        let touch = TouchState {
+            id,
+            position,
+            prev_position: position,
+            started: true,
+            ended: false,
+        };
+        self.touches.push(touch);
+    }
+
+    /// Updates an existing touch point.
+    pub fn update_touch(&mut self, id: u64, position: Vec2) {
+        if let Some(touch) = self.touches.iter_mut().find(|t| t.id == id) {
+            touch.prev_position = touch.position;
+            touch.position = position;
+            touch.started = false;
+            touch.ended = false;
+        }
+    }
+
+    /// Marks a touch as ended (will be removed at the end of the frame).
+    pub fn end_touch(&mut self, id: u64) {
+        if let Some(touch) = self.touches.iter_mut().find(|t| t.id == id) {
+            touch.ended = true;
+        }
+    }
+
     pub fn begin_frame(&mut self) {
         self.pressed.clear();
         self.mouse_delta = Vec2::ZERO;
@@ -156,5 +226,17 @@ impl Input {
         self.primary_clicked = false;
         self.text.clear();
         self.suppressed_motion_frames = self.suppressed_motion_frames.saturating_sub(1);
+
+        // Update touch state: move current to prev, remove ended touches.
+        self.prev_touches = self.touches.clone();
+        self.touches.retain_mut(|touch| {
+            if touch.ended {
+                false
+            } else {
+                touch.prev_position = touch.position;
+                touch.started = false;
+                true
+            }
+        });
     }
 }

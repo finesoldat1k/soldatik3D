@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use platform::winit;
 use platform::winit::application::ApplicationHandler;
-use platform::winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
+use platform::winit::event::{
+    DeviceEvent, ElementState, MouseButton, Touch, TouchPhase, WindowEvent,
+};
 use platform::winit::event_loop::{ActiveEventLoop, ControlFlow};
 use platform::winit::keyboard::{KeyCode, PhysicalKey};
 use platform::winit::window::WindowId;
@@ -288,6 +290,27 @@ impl<G: Game> App<G> {
         }
     }
 
+    /// Handles touch input events from winit.
+    fn handle_touch(&mut self, touch: Touch) {
+        let position = scene::glam::Vec2::new(touch.location.x as f32, touch.location.y as f32);
+        let id = touch.id;
+
+        match touch.phase {
+            TouchPhase::Started => {
+                self.input.add_touch(id, position);
+            }
+            TouchPhase::Moved => {
+                self.input.update_touch(id, position);
+            }
+            TouchPhase::Ended => {
+                self.input.end_touch(id);
+            }
+            TouchPhase::Cancelled => {
+                self.input.end_touch(id);
+            }
+        }
+    }
+
     /// Executes an engine command, then delegates unknown names to the game.
     fn execute_command(&mut self, line: &str) {
         let mut parts = line.split_whitespace();
@@ -418,6 +441,9 @@ impl<G: Game> ApplicationHandler for App<G> {
                     }
                 };
                 self.input.add_scroll_delta(amount);
+            }
+            WindowEvent::Touch(touch) => {
+                self.handle_touch(touch);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {

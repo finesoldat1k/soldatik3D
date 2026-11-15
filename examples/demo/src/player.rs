@@ -114,20 +114,39 @@ pub fn default_input_map() -> InputMap {
 }
 
 impl Player {
+    /// Updates the player with desktop input (mouse + keyboard).
     pub fn update(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
-        if input.action_pressed("fly_toggle") {
+        self.update_with_virtual(dt, input, colliders, None);
+    }
+
+    /// Updates the player with desktop input and optional virtual controls for mobile.
+    pub fn update_with_virtual(
+        &mut self,
+        dt: f32,
+        input: &Input,
+        colliders: &[Aabb],
+        virtual_controls: Option<&crate::virtual_joystick::VirtualControls>,
+    ) {
+        // Handle fly toggle from both keyboard and virtual button
+        let fly_toggle = input.action_pressed("fly_toggle")
+            || virtual_controls.is_some_and(|vc| vc.fly_pressed());
+        if fly_toggle {
             self.is_flying = !self.is_flying;
             self.velocity = Vec3::ZERO;
         }
 
+        // Handle mouse look (desktop) or touch look (mobile)
         let mouse = input.mouse_delta();
-        self.camera.yaw += mouse.x * MOUSE_SENSITIVITY;
-        self.camera.pitch -= mouse.y * MOUSE_SENSITIVITY;
-        self.camera.pitch = self
-            .camera
-            .pitch
-            .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+        if mouse.length_squared() > 0.0 {
+            self.camera.yaw += mouse.x * MOUSE_SENSITIVITY;
+            self.camera.pitch -= mouse.y * MOUSE_SENSITIVITY;
+            self.camera.pitch = self
+                .camera
+                .pitch
+                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+        }
 
+        // Keyboard rotation (for desktop without mouse capture)
         let rotation_speed = 2.0 * dt;
         if input.action_down("camera_rot_left") {
             self.camera.yaw -= rotation_speed;
@@ -146,6 +165,16 @@ impl Player {
             .pitch
             .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
 
+        // Determine movement input from keyboard or virtual joystick
+        let move_forward = input.action_down("move_forward")
+            || virtual_controls.is_some_and(|vc| vc.movement().y < -0.1);
+        let move_backward = input.action_down("move_backward")
+            || virtual_controls.is_some_and(|vc| vc.movement().y > 0.1);
+        let move_left = input.action_down("move_left")
+            || virtual_controls.is_some_and(|vc| vc.movement().x < -0.1);
+        let move_right = input.action_down("move_right")
+            || virtual_controls.is_some_and(|vc| vc.movement().x > 0.1);
+
         let sprinting = input.action_down("sprint");
         let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
 
@@ -161,16 +190,16 @@ impl Player {
         let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
 
         let mut wish_direction = Vec3::ZERO;
-        if input.action_down("move_forward") {
+        if move_forward {
             wish_direction += forward;
         }
-        if input.action_down("move_backward") {
+        if move_backward {
             wish_direction -= forward;
         }
-        if input.action_down("move_left") {
+        if move_left {
             wish_direction -= right;
         }
-        if input.action_down("move_right") {
+        if move_right {
             wish_direction += right;
         }
         if wish_direction.length_squared() > 0.0 {
@@ -183,7 +212,9 @@ impl Player {
             self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
 
-            if input.action_down("jump") {
+            let jump_down =
+                input.action_down("jump") || virtual_controls.is_some_and(|vc| vc.jump_pressed());
+            if jump_down {
                 self.velocity.y += 60.0 * dt;
             }
             if input.action_down("crouch") {
@@ -201,7 +232,9 @@ impl Player {
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
             self.velocity.y -= GRAVITY * dt;
 
-            if self.on_ground && input.action_down("jump") {
+            let jump_pressed =
+                input.action_down("jump") || virtual_controls.is_some_and(|vc| vc.jump_pressed());
+            if self.on_ground && jump_pressed {
                 self.velocity.y = JUMP_FORCE;
                 self.on_ground = false;
             }
