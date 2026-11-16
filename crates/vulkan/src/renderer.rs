@@ -26,7 +26,7 @@ use crate::sync::SyncObjects;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 1;
 const HDR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-const SHADOW_MAP_SIZE: u32 = 2048;
+const SHADOW_MAP_SIZE: u32 = 4096;
 const INITIAL_UI_CAPACITY: usize = 16_384;
 
 #[repr(C)]
@@ -34,8 +34,8 @@ const INITIAL_UI_CAPACITY: usize = 16_384;
 struct WorldPushConstants {
     mvp: [f32; 16],
     light_view_projection: [f32; 16],
-    light_position: [f32; 4],
-    light_color: [f32; 4],
+    light_dir_he: [f32; 4], // xyz = light direction (toward surface), w = ortho_half_extent
+    light_color: [f32; 4],  // rgb = color * intensity, a = sun angular diameter (radians)
     camera_position: [f32; 4],
     screen_and_debug: [f32; 4],
     material: [f32; 4],
@@ -264,6 +264,11 @@ pub struct VulkanRenderer {
     ui_buffer: GpuBuffer,
     ui_capacity: usize,
     ui_vertex_count: u32,
+    /// Sky rendering pipeline and resources
+    sky_pipeline: Pipeline,
+    sky_layout: DescriptorSetLayout,
+    sky_set: vk::DescriptorSet,
+    sky_pool: DescriptorPool,
 
     sync: SyncObjects,
     command_pool: CommandPool,
@@ -278,6 +283,8 @@ pub struct VulkanRenderer {
     capture_requested: bool,
     /// Static geometry is rendered into the shadow map once at startup.
     shadow_ready: bool,
+    /// Start time for sky animation.
+    start_time: std::time::Instant,
 }
 
 impl VulkanRenderer {
@@ -461,6 +468,42 @@ impl VulkanRenderer {
                 )
             },
         )?;
+
+        // Sky pipeline (renders before world in HDR pass)
+        let sky_layout = DescriptorSetLayout::single_texture(&context.device)?;
+        let sky_pool = DescriptorPool::new(&context.device, 1, 1, 0)?;
+        let sky_set = sky_pool.allocate(&context.device, sky_layout.handle, 1)?[0];
+        // Sky push constants size: 2 mat4 (128 bytes) + 5 vec4 (80 bytes) = 208 bytes
+        const SKY_PUSH_CONSTANT_SIZE: u32 = 208;
+
+        let sky_pipeline = make_pipeline(
+            &context.device,
+            "sky",
+            include_str!("../shaders/sky.vert"),
+            include_str!("../shaders/sky.frag"),
+            shaderc::ShaderKind::Vertex,
+            shaderc::ShaderKind::Fragment,
+            |vertex, fragment| {
+                pipeline::offscreen(
+                    &context.device,
+                    hdr_render_pass.handle,
+                    sky_layout.handle,
+                    vertex,
+                    fragment,
+                    SKY_PUSH_CONSTANT_SIZE,
+                )
+            },
+        )?;
+
+        // Update sky descriptor set with HDR image (will be updated per frame)
+        descriptor::update_single(
+            &context.device,
+            sky_set,
+            frame.hdr.sampler,
+            frame.hdr.view,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        );
+
         let shadow_pipeline = make_pipeline(
             &context.device,
             "shadow",
@@ -634,6 +677,10 @@ impl VulkanRenderer {
             world_layout,
             single_texture_layout,
             composite_layout,
+            sky_layout,
+            sky_pipeline,
+            sky_pool,
+            sky_set,
             scene: scene_gpu,
             ibl_irradiance,
             ibl_prefiltered,
@@ -654,6 +701,7 @@ impl VulkanRenderer {
             vsync,
             capture_requested: false,
             shadow_ready: false,
+            start_time: std::time::Instant::now(),
         })
     }
 
@@ -1125,17 +1173,26 @@ impl VulkanRenderer {
         let light = self.scene.primary_light;
         let light_view_projection = vulkan_projection(light.view_projection());
 
+        // Light direction points FROM light TO surface (target - position).
+        let light_dir = (light.target - light.position).normalize_or_zero();
         let primary_color = light.color * light.intensity;
+        // Sun angular diameter ~0.53 degrees = 0.0093 radians.
+        const SUN_ANGULAR_DIAMETER: f32 = 0.0093;
         let push = WorldPushConstants {
             mvp: view_projection.to_cols_array(),
             light_view_projection: light_view_projection.to_cols_array(),
-            light_position: [
-                light.position.x,
-                light.position.y,
-                light.position.z,
+            light_dir_he: [
+                light_dir.x,
+                light_dir.y,
+                light_dir.z,
                 light.shadow.ortho_half_extent,
             ],
-            light_color: [primary_color.x, primary_color.y, primary_color.z, 1.0],
+            light_color: [
+                primary_color.x,
+                primary_color.y,
+                primary_color.z,
+                SUN_ANGULAR_DIAMETER,
+            ],
             camera_position: [
                 frame.camera.position.x,
                 frame.camera.position.y,
@@ -1234,6 +1291,89 @@ impl VulkanRenderer {
                 self.context
                     .device
                     .cmd_set_scissor(command_buffer, 0, &[full_scissor]);
+
+                // 1a. Sky pass (full-screen triangle)
+                {
+                    // Update accumulated time for sky animation
+                    let elapsed = self.start_time.elapsed().as_secs_f32();
+
+                    // Update sky descriptor set with current HDR image (read-only for sky)
+                    // Actually sky doesn't need HDR input, it writes to it
+                    // We need to update sky push constants
+                    let light = self.scene.primary_light;
+                    let light_dir = (light.target - light.position).normalize_or_zero();
+                    let primary_color = light.color * light.intensity;
+                    const SUN_ANGULAR_DIAMETER: f32 = 0.0093;
+
+                    // Sky push constants
+                    #[repr(C)]
+                    #[derive(Clone, Copy, Pod, Zeroable)]
+                    struct SkyPushConstants {
+                        inv_proj: [f32; 16],
+                        inv_view: [f32; 16],
+                        camera_pos: [f32; 4],
+                        light_dir: [f32; 4],
+                        light_color: [f32; 4],
+                        sky_params: [f32; 4],
+                        atmosphere: [f32; 4],
+                    }
+
+                    let projection = vulkan_projection(frame.camera.projection);
+                    let view = frame.camera.view;
+                    let inv_proj = projection.inverse();
+                    let inv_view = view.inverse();
+
+                    let sky_push = SkyPushConstants {
+                        inv_proj: inv_proj.to_cols_array(),
+                        inv_view: inv_view.to_cols_array(),
+                        camera_pos: [
+                            frame.camera.position.x,
+                            frame.camera.position.y,
+                            frame.camera.position.z,
+                            1.0,
+                        ],
+                        light_dir: [light_dir.x, light_dir.y, light_dir.z, SUN_ANGULAR_DIAMETER],
+                        light_color: [primary_color.x, primary_color.y, primary_color.z, 1.0],
+                        sky_params: [
+                            elapsed, // time for cloud animation
+                            0.0001,  // cloud speed
+                            0.0005,  // cloud scale
+                            0.0,
+                        ],
+                        atmosphere: [
+                            1.0, // rayleigh scale
+                            0.5, // mie scale
+                            1.0, // exposure
+                            1.0, // white point
+                        ],
+                    };
+
+                    let sky_push_bytes = bytemuck::bytes_of(&sky_push);
+
+                    self.context.device.cmd_bind_pipeline(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.sky_pipeline.handle,
+                    );
+                    self.context.device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.sky_pipeline.layout,
+                        0,
+                        &[self.sky_set],
+                        &[],
+                    );
+                    self.context.device.cmd_push_constants(
+                        command_buffer,
+                        self.sky_pipeline.layout,
+                        vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        sky_push_bytes,
+                    );
+                    // Draw full-screen triangle (3 vertices)
+                    self.context.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+                }
+
                 self.context.device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,

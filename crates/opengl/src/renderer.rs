@@ -20,7 +20,7 @@ use ui::UiVertex;
 use crate::context::GlContext;
 use crate::shader::ShaderProgram;
 
-const SHADOW_MAP_SIZE: u32 = 2048;
+const SHADOW_MAP_SIZE: u32 = 4096;
 
 struct GpuMesh {
     vao: glow::VertexArray,
@@ -339,6 +339,7 @@ pub struct OpenGlRenderer {
     shadow_ready: bool,
 
     world_program: ShaderProgram,
+    sky_program: ShaderProgram,
     shadow_program: ShaderProgram,
     bright_program: ShaderProgram,
     blur_program: ShaderProgram,
@@ -361,6 +362,7 @@ pub struct OpenGlRenderer {
     size: (u32, u32),
     vsync: VsyncMode,
     capture_requested: bool,
+    start_time: std::time::Instant,
 }
 
 impl OpenGlRenderer {
@@ -440,6 +442,12 @@ impl OpenGlRenderer {
             "world",
             include_str!("../shaders/world.vert"),
             include_str!("../shaders/world.frag"),
+        )?;
+        let sky_program = ShaderProgram::new(
+            gl,
+            "sky",
+            include_str!("../shaders/sky.vert"),
+            include_str!("../shaders/sky.frag"),
         )?;
         let shadow_program = ShaderProgram::new(
             gl,
@@ -536,6 +544,7 @@ impl OpenGlRenderer {
             shadow_depth,
             shadow_ready: false,
             world_program,
+            sky_program,
             shadow_program,
             bright_program,
             blur_program,
@@ -555,6 +564,7 @@ impl OpenGlRenderer {
             size,
             vsync,
             capture_requested: false,
+            start_time: std::time::Instant::now(),
         })
     }
 
@@ -624,7 +634,10 @@ impl OpenGlRenderer {
         }
 
         // 2. Forward pass into HDR + depth.
+        let light_dir = (light.target - light.position).normalize_or_zero();
         let primary_color = light.color * light.intensity;
+        const SUN_ANGULAR_DIAMETER: f32 = 0.0093;
+        let elapsed = self.start_time.elapsed().as_secs_f32();
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(targets.hdr_fbo));
             gl.viewport(0, 0, targets.width as i32, targets.height as i32);
@@ -637,17 +650,47 @@ impl OpenGlRenderer {
             gl.clear_color(clear[0], clear[1], clear[2], clear[3]);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
+            // 2a. Sky pass (full-screen triangle)
+            {
+                self.sky_program.bind(gl);
+                self.sky_program
+                    .set_mat4(gl, "u_inv_proj", &frame.camera.projection.inverse());
+                self.sky_program
+                    .set_mat4(gl, "u_inv_view", &frame.camera.view.inverse());
+                self.sky_program
+                    .set_vec4(gl, "u_camera_pos", frame.camera.position.extend(1.0));
+                self.sky_program.set_vec4(
+                    gl,
+                    "u_light_dir",
+                    light_dir.extend(SUN_ANGULAR_DIAMETER),
+                );
+                self.sky_program
+                    .set_vec4(gl, "u_light_color", primary_color.extend(1.0));
+                self.sky_program.set_vec4(
+                    gl,
+                    "u_sky_params",
+                    Vec4::new(elapsed, 0.0001, 0.0005, 0.0),
+                );
+                self.sky_program
+                    .set_vec4(gl, "u_atmosphere", Vec4::new(1.0, 0.5, 1.0, 1.0));
+                gl.bind_vertex_array(Some(self.fullscreen_vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
+
             self.world_program.bind(gl);
             self.world_program.set_mat4(gl, "u_mvp", &view_projection);
             self.world_program
                 .set_mat4(gl, "u_light_vp", &light_view_projection);
             self.world_program.set_vec4(
                 gl,
-                "u_light_pos",
-                light.position.extend(light.shadow.ortho_half_extent),
+                "u_light_dir_he",
+                light_dir.extend(light.shadow.ortho_half_extent),
             );
-            self.world_program
-                .set_vec4(gl, "u_light_color", primary_color.extend(1.0));
+            self.world_program.set_vec4(
+                gl,
+                "u_light_color",
+                primary_color.extend(SUN_ANGULAR_DIAMETER),
+            );
             self.world_program
                 .set_vec4(gl, "u_camera_pos", frame.camera.position.extend(1.0));
             self.world_program.set_vec4(

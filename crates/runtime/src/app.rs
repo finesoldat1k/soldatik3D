@@ -44,8 +44,20 @@ pub(crate) struct App<G: Game> {
 }
 
 impl<G: Game> App<G> {
-    pub(crate) fn new(game: G) -> Self {
-        let config = game.config();
+    pub(crate) fn new(game: G, args: &[String]) -> Self {
+        let base_config = game.config();
+        let config = GameConfig::from_env_and_args(args);
+        // Merge game-provided config with env/args overrides (env/args take precedence)
+        let config = GameConfig {
+            title: base_config.title,
+            width: config.width,
+            height: config.height,
+            cursor_locked: config.cursor_locked,
+            fullscreen: config.fullscreen,
+            msaa_samples: config.msaa_samples,
+            backend: config.backend,
+            vsync: config.vsync,
+        };
         Self {
             game,
             config,
@@ -134,6 +146,7 @@ impl<G: Game> App<G> {
             &self.config.title,
             self.config.width,
             self.config.height,
+            self.config.fullscreen,
         ) {
             Ok(window) => window,
             Err(error) => {

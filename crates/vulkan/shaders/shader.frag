@@ -21,7 +21,9 @@ layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp; mat4 light_vp;
-    vec4 light_pos; vec4 light_color; vec4 camera_pos; vec4 screen_and_debug;
+    vec4 light_dir_he;  // xyz = light direction (toward surface), w = ortho_half_extent
+    vec4 light_color;   // rgb = color * intensity, a = sun_angular_diameter (radians)
+    vec4 camera_pos; vec4 screen_and_debug;
     vec4 material;
 } pc;
 
@@ -66,7 +68,7 @@ vec2 env_brdf(float roughness, float NdotV) {
 float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     float NdotL = max(dot(normal, light_dir), 0.0);
     float shadow_size = float(textureSize(shadow_sampler, 0).x);
-    float texel_world = 2.0 * max(pc.light_pos.w, 1.0) / shadow_size;
+    float texel_world = 2.0 * max(pc.light_dir_he.w, 1.0) / shadow_size;
     float slope = sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.15);
     vec3 sample_pos = pos + normal * min(slope, 4.0) * texel_world;
 
@@ -77,7 +79,7 @@ float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     vec2 texel = 1.0 / vec2(textureSize(shadow_sampler, 0));
-    float bias = max(0.0015 * (1.0 - NdotL), 0.00025);
+    float bias = max(0.003 * (1.0 - NdotL), 0.001);
 
     float shadow = 0.0;
     for (int x = -1; x <= 1; x++) {
@@ -89,7 +91,34 @@ float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     return shadow / 9.0;
 }
 
-// Одна точка освещения без тени (для 8 доп. ламп из UBO)
+// Directional light (sun) with PCF shadow
+vec3 compute_directional_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
+                               float metallic, float roughness,
+                               vec3 light_dir, vec3 light_color,
+                               float sun_angular_diameter) {
+    // Light direction points FROM light TO surface (same as L in shading)
+    vec3 L = light_dir;
+    float NdotL = max(dot(N, L), 0.0);
+    if (NdotL <= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(V + L);
+    float NDF = D_GGX(N, H, roughness);
+    float G = G_SmithGGX(N, V, L, roughness);
+    vec3 F = F_Schlick(F0, max(dot(H, V), 0.0));
+    vec3 spec = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+
+    // Shadow
+    float shadow = calc_shadow(frag_pos, N, L);
+
+    // Sun angular diameter for penumbra softening (optional)
+    // For now, just use the shadow directly
+
+    vec3 radiance = light_color * NdotL * shadow;
+    return (kD * albedo * INV_PI + spec) * radiance;
+}
+
+// Point/spot light (from UBO) without shadow
 vec3 compute_extra_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
                          float metallic, float roughness,
                          vec3 light_pos, vec3 light_color, float radius) {
@@ -108,7 +137,7 @@ vec3 compute_extra_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
 
     float NdotL = max(dot(N, L), 0.0);
-    vec3 radiance = light_color * NdotL * atten * 4.0;  // x4 — HDR вклад
+    vec3 radiance = light_color * NdotL * atten * 4.0;
     return (kD * albedo * INV_PI + spec) * radiance;
 }
 
@@ -132,21 +161,19 @@ void main() {
     float roughness = clamp(frag_material.y < 0.0 ? pc.material.y : frag_material.y, 0.045, 1.0);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // === ПРЯМОЙ СВЕТ (primary, с тенью) ===
-    vec3 L_p = normalize(pc.light_pos.xyz - frag_pos);
-    vec3 H_p = normalize(V + L_p);
-    float NDF_p = D_GGX(N, H_p, roughness);
-    float G_p = G_SmithGGX(N, V, L_p, roughness);
-    vec3 F_p = F_Schlick(F0, max(dot(H_p, V), 0.0));
-    vec3 spec_p = (NDF_p * G_p * F_p) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L_p), 0.0) + 0.0001);
-    vec3 kD_p = (vec3(1.0) - F_p) * (1.0 - metallic);
+    // === DIRECTIONAL LIGHT (PrimaryLight / Sun) ===
+    // pc.light_dir_he.xyz = light direction (normalized, pointing toward surface)
+    // pc.light_dir_he.w = ortho_half_extent for shadow
+    // pc.light_color.rgb = light color * intensity
+    // pc.light_color.a = sun angular diameter (radians)
+    vec3 light_dir = normalize(pc.light_dir_he.xyz);
+    vec3 light_color = pc.light_color.rgb;
+    float sun_angular_diameter = pc.light_color.a;
 
-    float NdotL_p = max(dot(N, L_p), 0.0);
-    float shadow = calc_shadow(frag_pos, N, L_p);
-    vec3 radiance_p = pc.light_color.rgb * NdotL_p * shadow * 5.0;
-    vec3 direct_light = (kD_p * albedo * INV_PI + spec_p) * radiance_p;
+    vec3 direct_light = compute_directional_light(N, V, albedo, F0, metallic, roughness,
+                                                  light_dir, light_color, sun_angular_diameter);
 
-    // === ДОПОЛНИТЕЛЬНЫЕ 8 ЛАМП (без тени, из UBO) ===
+    // === ADDITIONAL 8 LOCAL LIGHTS (point lights, no shadow) ===
     for (int i = 0; i < 8; i++) {
         if (lights.position_radius[i].w < 0.01) continue;
         vec3 lp = lights.position_radius[i].xyz;
@@ -155,7 +182,7 @@ void main() {
         direct_light += compute_extra_light(N, V, albedo, F0, metallic, roughness, lp, lc, r);
     }
 
-    // === IBL (ambient от неба) ===
+    // === IBL (ambient from sky cubemap only - NO SUN) ===
     float NdotV = max(dot(N, V), 0.0);
     vec3 F_env = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
     vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);

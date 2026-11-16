@@ -60,8 +60,9 @@ pub fn run<G>(game: G) -> Result<()>
 where
     G: Game + 'static,
 {
+    let args: Vec<String> = std::env::args().collect();
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = app::App::new(game);
+    let mut app = app::App::new(game, &args);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -84,10 +85,11 @@ where
 {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
+    let args: Vec<String> = Vec::new(); // Android doesn't use command-line args
     let event_loop = winit::event_loop::EventLoop::builder()
         .with_android_app(android_app)
         .build()?;
-    let mut app = app::App::new(game);
+    let mut app = app::App::new(game, &args);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

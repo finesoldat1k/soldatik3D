@@ -75,9 +75,10 @@ impl DebugMenu {
         let (width, height) = viewport;
         // Fit the panel on short landscape screens (Android) without
         // shrinking desktop text: cap by both viewport axes.
-        let s = scale.min(height / 520.0).min(width / 400.0).max(0.7);
-        let panel_w = (340.0 * s).min(width - 24.0 * s);
-        let panel_h = (382.0 * s).min(height - 24.0 * s);
+        // Scale up by 1.5x for larger debug menu.
+        let s = scale.min(height / 520.0).min(width / 400.0).max(1.0) * 1.5;
+        let panel_w = (380.0 * s).min(width - 24.0 * s);
+        let panel_h = (420.0 * s).min(height - 24.0 * s);
         let x = 12.0 * s;
         let y = 12.0 * s;
 
@@ -96,19 +97,25 @@ impl DebugMenu {
             [0.28, 0.30, 0.35, 0.85],
         );
 
-        let pad = 10.0 * s;
+        let pad = 12.0 * s;
         let inner_w = panel_w - pad * 2.0;
-        let mut cursor = y + 9.0 * s;
+        let mut cursor = y + 12.0 * s;
 
-        ui.text("SOLDATIK3D // DEBUG", x + pad, cursor, 12.0 * s, accent);
-        cursor += 17.0 * s;
-        ui.text(&format!("CAM {camera_name}"), x + pad, cursor, 8.5 * s, dim);
-        cursor += 13.0 * s;
+        ui.text("SOLDATIK3D // DEBUG", x + pad, cursor, 14.0 * s, accent);
+        cursor += 20.0 * s;
+        ui.text(
+            &format!("CAM {camera_name}"),
+            x + pad,
+            cursor,
+            10.0 * s,
+            dim,
+        );
+        cursor += 16.0 * s;
         ui.rect(x + pad, cursor, inner_w, 1.0 * s, line);
-        cursor += 8.0 * s;
+        cursor += 10.0 * s;
 
-        ui.text("PERFORMANCE", x + pad, cursor, 9.0 * s, accent);
-        cursor += 13.0 * s;
+        ui.text("PERFORMANCE", x + pad, cursor, 11.0 * s, accent);
+        cursor += 16.0 * s;
         let performance = [
             format!("FPS        {:>5.0}", fps),
             format!("Frame      {:>5.2} ms", frame_ms),
@@ -117,15 +124,15 @@ impl DebugMenu {
             format!("Draws      {:>5}", stats.draw_calls),
         ];
         for text in &performance {
-            ui.text(text, x + pad, cursor, 8.5 * s, white);
-            cursor += 12.0 * s;
+            ui.text(text, x + pad, cursor, 10.0 * s, white);
+            cursor += 15.0 * s;
         }
 
-        cursor += 2.0 * s;
+        cursor += 3.0 * s;
         ui.rect(x + pad, cursor, inner_w, 1.0 * s, line);
-        cursor += 8.0 * s;
-        ui.text("CAMERA", x + pad, cursor, 9.0 * s, accent);
-        cursor += 13.0 * s;
+        cursor += 10.0 * s;
+        ui.text("CAMERA", x + pad, cursor, 11.0 * s, accent);
+        cursor += 16.0 * s;
         for text in [
             format!("Name       {camera_name}"),
             format!(
@@ -133,15 +140,15 @@ impl DebugMenu {
                 camera_position.x, camera_position.y, camera_position.z
             ),
         ] {
-            ui.text(&text, x + pad, cursor, 8.5 * s, white);
-            cursor += 12.0 * s;
+            ui.text(&text, x + pad, cursor, 10.0 * s, white);
+            cursor += 15.0 * s;
         }
 
-        cursor += 2.0 * s;
+        cursor += 3.0 * s;
         ui.rect(x + pad, cursor, inner_w, 1.0 * s, line);
-        cursor += 8.0 * s;
-        ui.text("PLAYER", x + pad, cursor, 9.0 * s, accent);
-        cursor += 13.0 * s;
+        cursor += 10.0 * s;
+        ui.text("PLAYER", x + pad, cursor, 11.0 * s, accent);
+        cursor += 16.0 * s;
         let mode = if flying { "FLIGHT" } else { "WALK" };
         for text in [
             format!(
@@ -151,18 +158,18 @@ impl DebugMenu {
             format!("Area       {area}"),
             format!("Mode       {mode}"),
         ] {
-            ui.text(&text, x + pad, cursor, 8.5 * s, white);
-            cursor += 12.0 * s;
+            ui.text(&text, x + pad, cursor, 10.0 * s, white);
+            cursor += 15.0 * s;
         }
 
-        cursor += 2.0 * s;
+        cursor += 3.0 * s;
         ui.rect(x + pad, cursor, inner_w, 1.0 * s, line);
-        cursor += 8.0 * s;
-        ui.text("DEBUG VIEW", x + pad, cursor, 9.0 * s, accent);
-        cursor += 13.0 * s;
-        let gap = 5.0 * s;
+        cursor += 10.0 * s;
+        ui.text("DEBUG VIEW", x + pad, cursor, 11.0 * s, accent);
+        cursor += 16.0 * s;
+        let gap = 6.0 * s;
         let chip_w = (inner_w - gap * 2.0) / 3.0;
-        let chip_h = 20.0 * s;
+        let chip_h = 24.0 * s;
         for (index, (label, view)) in [
             ("LIT", DebugView::Lit),
             ("NORMALS", DebugView::Normals),
@@ -198,13 +205,13 @@ impl DebugMenu {
                 if active { good } else { white },
             );
         }
-        cursor += chip_h + 4.0 * s;
+        cursor += chip_h + 6.0 * s;
 
-        cursor += 2.0 * s;
+        cursor += 3.0 * s;
         ui.rect(x + pad, cursor, inner_w, 1.0 * s, line);
-        cursor += 8.0 * s;
-        ui.text("CONTROLS", x + pad, cursor, 9.0 * s, accent);
-        cursor += 13.0 * s;
+        cursor += 10.0 * s;
+        ui.text("CONTROLS", x + pad, cursor, 11.0 * s, accent);
+        cursor += 16.0 * s;
         let col1 = x + pad;
         let col2 = x + pad + inner_w * 0.5;
         let controls = [
@@ -223,9 +230,9 @@ impl DebugMenu {
         for (index, (key, description)) in controls.iter().enumerate() {
             let column = if index < 6 { col1 } else { col2 };
             let row = if index < 6 { index } else { index - 6 };
-            let line_y = cursor + row as f32 * 12.5 * s;
-            ui.text(key, column, line_y, 8.0 * s, dim);
-            ui.text(description, column + 58.0 * s, line_y, 8.0 * s, white);
+            let line_y = cursor + row as f32 * 15.0 * s;
+            ui.text(key, column, line_y, 9.5 * s, dim);
+            ui.text(description, column + 65.0 * s, line_y, 9.5 * s, white);
         }
     }
 }

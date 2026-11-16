@@ -11,11 +11,109 @@ pub struct GameConfig {
     pub height: u32,
     /// Try to capture and hide the cursor when the window opens.
     pub cursor_locked: bool,
+    /// Start in fullscreen mode. Can be overridden by `SOLDATIK3D_FULLSCREEN`.
+    pub fullscreen: bool,
+    /// Multisample anti-aliasing sample count (1 = off). Can be overridden by `SOLDATIK3D_MSAA`.
+    pub msaa_samples: u32,
     /// Graphics backend used to present frames. `SOLDATIK3D_BACKEND` overrides
     /// the default at startup (`vulkan` or `opengl`).
     pub backend: BackendKind,
     /// Vertical sync mode. `SOLDATIK3D_VSYNC` overrides the default at startup.
     pub vsync: VsyncMode,
+}
+
+impl GameConfig {
+    /// Creates a config with overrides from environment variables and command-line args.
+    ///
+    /// Environment variables (checked in order):
+    /// - `SOLDATIK3D_BACKEND`: `vulkan` or `opengl`
+    /// - `SOLDATIK3D_VSYNC`: `on`, `off`, `adaptive`, `mailbox`
+    /// - `SOLDATIK3D_WIDTH`: window width in pixels
+    /// - `SOLDATIK3D_HEIGHT`: window height in pixels
+    /// - `SOLDATIK3D_FULLSCREEN`: `true`/`false`
+    /// - `SOLDATIK3D_MSAA`: sample count (1, 2, 4, 8)
+    /// - `SOLDATIK3D_CURSOR_LOCKED`: `true`/`false`
+    pub fn from_env_and_args(args: &[String]) -> Self {
+        let mut config = Self::default();
+
+        // Environment variables
+        if let Ok(v) = std::env::var("SOLDATIK3D_WIDTH")
+            && let Ok(w) = v.parse()
+        {
+            config.width = w;
+        }
+        if let Ok(v) = std::env::var("SOLDATIK3D_HEIGHT")
+            && let Ok(h) = v.parse()
+        {
+            config.height = h;
+        }
+        if let Ok(v) = std::env::var("SOLDATIK3D_FULLSCREEN") {
+            config.fullscreen = v == "true" || v == "1" || v == "yes";
+        }
+        if let Ok(v) = std::env::var("SOLDATIK3D_MSAA")
+            && let Ok(s) = v.parse::<u32>()
+        {
+            config.msaa_samples = s.max(1);
+        }
+        if let Ok(v) = std::env::var("SOLDATIK3D_CURSOR_LOCKED") {
+            config.cursor_locked = v == "true" || v == "1" || v == "yes";
+        }
+        if let Some(backend) = BackendKind::from_env() {
+            config.backend = backend;
+        }
+        if let Some(vsync) = VsyncMode::from_env() {
+            config.vsync = vsync;
+        }
+
+        // Command-line args (--key=value or --key value)
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+            if let Some(key) = arg.strip_prefix("--") {
+                let value = if key.contains('=') {
+                    key.split('=').nth(1).unwrap_or("").to_string()
+                } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    i += 1;
+                    args[i].clone()
+                } else {
+                    "true".to_string()
+                };
+                match key.split('=').next().unwrap_or(key) {
+                    "width" => {
+                        if let Ok(v) = value.parse() {
+                            config.width = v;
+                        }
+                    }
+                    "height" => {
+                        if let Ok(v) = value.parse() {
+                            config.height = v;
+                        }
+                    }
+                    "fullscreen" => config.fullscreen = value == "true" || value == "1",
+                    "msaa" => {
+                        if let Ok(v) = value.parse::<u32>() {
+                            config.msaa_samples = v.max(1);
+                        }
+                    }
+                    "cursor-locked" => config.cursor_locked = value == "true" || value == "1",
+                    "backend" => {
+                        if let Some(b) = BackendKind::from_name(&value) {
+                            config.backend = b;
+                        }
+                    }
+                    "vsync" => {
+                        if let Some(v) = VsyncMode::from_name(&value) {
+                            config.vsync = v;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+
+        config
+    }
 }
 
 impl Default for GameConfig {
@@ -25,6 +123,8 @@ impl Default for GameConfig {
             width: 1280,
             height: 720,
             cursor_locked: true,
+            fullscreen: false,
+            msaa_samples: 1,
             backend: BackendKind::from_env().unwrap_or_else(default_backend),
             vsync: VsyncMode::from_env().unwrap_or_default(),
         }
@@ -70,6 +170,16 @@ impl GameConfig {
 
     pub fn with_vsync(mut self, vsync: VsyncMode) -> Self {
         self.vsync = vsync;
+        self
+    }
+
+    pub fn with_fullscreen(mut self, fullscreen: bool) -> Self {
+        self.fullscreen = fullscreen;
+        self
+    }
+
+    pub fn with_msaa(mut self, samples: u32) -> Self {
+        self.msaa_samples = samples.max(1);
         self
     }
 }

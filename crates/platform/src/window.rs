@@ -14,10 +14,21 @@ pub struct PlatformWindow {
 }
 
 impl PlatformWindow {
-    pub fn new(event_loop: &ActiveEventLoop, title: &str, width: u32, height: u32) -> Result<Self> {
+    pub fn new(
+        event_loop: &ActiveEventLoop,
+        title: &str,
+        width: u32,
+        height: u32,
+        fullscreen: bool,
+    ) -> Result<Self> {
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_inner_size(LogicalSize::new(width, height));
+        let attributes = if fullscreen {
+            attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
+        } else {
+            attributes
+        };
         let window = event_loop
             .create_window(attributes)
             .context("failed to create the platform window")?;

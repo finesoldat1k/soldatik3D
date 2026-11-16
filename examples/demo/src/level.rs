@@ -91,9 +91,9 @@ pub fn build_polygon() -> TestPolygon {
             color: Vec3::new(1.0, 0.94, 0.84),
             intensity: 0.85,
             shadow: ShadowSettings {
-                ortho_half_extent: 58.0,
-                near: 1.0,
-                far: 140.0,
+                ortho_half_extent: 64.0,
+                near: 4.0,
+                far: 160.0,
             },
         })
         .with_clear_color([0.012, 0.018, 0.032, 1.0]);

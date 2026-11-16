@@ -11,8 +11,8 @@ layout(std140) uniform LightBuffer {
 } lights;
 
 uniform mat4 u_light_vp;
-uniform vec4 u_light_pos;
-uniform vec4 u_light_color;
+uniform vec4 u_light_dir_he;   // xyz = light direction (toward surface), w = ortho_half_extent
+uniform vec4 u_light_color;    // rgb = color * intensity, a = sun_angular_diameter
 uniform vec4 u_camera_pos;
 uniform vec4 u_screen_and_debug;
 uniform vec4 u_material;
@@ -67,7 +67,7 @@ vec2 env_brdf(float roughness, float NdotV) {
 float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     float NdotL = max(dot(normal, light_dir), 0.0);
     float shadow_size = float(textureSize(shadow_sampler, 0).x);
-    float texel_world = 2.0 * max(u_light_pos.w, 1.0) / shadow_size;
+    float texel_world = 2.0 * max(u_light_dir_he.w, 1.0) / shadow_size;
     float slope = sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.15);
     vec3 sample_pos = pos + normal * min(slope, 4.0) * texel_world;
 
@@ -78,7 +78,7 @@ float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     vec2 texel = 1.0 / vec2(textureSize(shadow_sampler, 0));
-    float bias = max(0.0015 * (1.0 - NdotL), 0.00025);
+    float bias = max(0.003 * (1.0 - NdotL), 0.001);
 
     float shadow = 0.0;
     for (int x = -1; x <= 1; x++) {
@@ -90,6 +90,29 @@ float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
     return shadow / 9.0;
 }
 
+// Directional light (sun) with PCF shadow
+vec3 compute_directional_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
+                               float metallic, float roughness,
+                               vec3 light_dir, vec3 light_color,
+                               float sun_angular_diameter) {
+    vec3 L = light_dir;
+    float NdotL = max(dot(N, L), 0.0);
+    if (NdotL <= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(V + L);
+    float NDF = D_GGX(N, H, roughness);
+    float G = G_SmithGGX(N, V, L, roughness);
+    vec3 F = F_Schlick(F0, max(dot(H, V), 0.0));
+    vec3 spec = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+
+    float shadow = calc_shadow(frag_pos, N, L);
+
+    vec3 radiance = light_color * NdotL * shadow;
+    return (kD * albedo * INV_PI + spec) * radiance;
+}
+
+// Point/spot light (from UBO) without shadow
 vec3 compute_extra_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
                          float metallic, float roughness,
                          vec3 light_pos, vec3 light_color, float radius) {
@@ -132,21 +155,19 @@ void main() {
     float roughness = clamp(frag_material.y < 0.0 ? u_material.y : frag_material.y, 0.045, 1.0);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // Primary light with the shadow map.
-    vec3 L_p = normalize(u_light_pos.xyz - frag_pos);
-    vec3 H_p = normalize(V + L_p);
-    float NDF_p = D_GGX(N, H_p, roughness);
-    float G_p = G_SmithGGX(N, V, L_p, roughness);
-    vec3 F_p = F_Schlick(F0, max(dot(H_p, V), 0.0));
-    vec3 spec_p = (NDF_p * G_p * F_p) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L_p), 0.0) + 0.0001);
-    vec3 kD_p = (vec3(1.0) - F_p) * (1.0 - metallic);
+    // === DIRECTIONAL LIGHT (PrimaryLight / Sun) ===
+    // u_light_dir_he.xyz = light direction (normalized, pointing toward surface)
+    // u_light_dir_he.w = ortho_half_extent for shadow
+    // u_light_color.rgb = light color * intensity
+    // u_light_color.a = sun angular diameter (radians)
+    vec3 light_dir = normalize(u_light_dir_he.xyz);
+    vec3 light_color = u_light_color.rgb;
+    float sun_angular_diameter = u_light_color.a;
 
-    float NdotL_p = max(dot(N, L_p), 0.0);
-    float shadow = calc_shadow(frag_pos, N, L_p);
-    vec3 radiance_p = u_light_color.rgb * NdotL_p * shadow * 5.0;
-    vec3 direct_light = (kD_p * albedo * INV_PI + spec_p) * radiance_p;
+    vec3 direct_light = compute_directional_light(N, V, albedo, F0, metallic, roughness,
+                                                  light_dir, light_color, sun_angular_diameter);
 
-    // Up to eight local lights from the shared std140 buffer.
+    // === ADDITIONAL 8 LOCAL LIGHTS (point lights, no shadow) ===
     for (int i = 0; i < 8; i++) {
         if (lights.position_radius[i].w < 0.01) continue;
         vec3 lp = lights.position_radius[i].xyz;
@@ -155,9 +176,7 @@ void main() {
         direct_light += compute_extra_light(N, V, albedo, F0, metallic, roughness, lp, lc, r);
     }
 
-    // Image-based lighting. The irradiance map is cosine-convolved and the
-    // specular cubemap is GGX-prefiltered, so reflections stay smooth instead
-    // of flickering as the camera moves.
+    // === IBL (ambient from sky cubemap only - NO SUN) ===
     float NdotV = max(dot(N, V), 0.0);
     vec3 F_env = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
     vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);

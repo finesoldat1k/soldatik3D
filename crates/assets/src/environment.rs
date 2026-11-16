@@ -2,20 +2,24 @@
 //!
 //! The resources are generated once at startup. Diffuse lighting uses a small
 //! cosine-convolved irradiance cubemap, while reflections sample a GGX
-//! prefiltered cubemap whose mip chain maps roughness to a LOD level. Keeping
-//! both maps smooth removes the sharp, screen-following sun squares produced by
-//! sampling an unfiltered environment cubemap for every surface.
+//! prefiltered cubemap whose mip chain maps roughness to a LOD level.
+//!
+//! Architecture: The sky cubemap contains ONLY the atmospheric sky (zenith,
+//! horizon, ground). The sun is a separate directional light (PrimaryLight)
+//! with its own shadow map. This avoids baking the sun into the environment
+//! map, which caused square/line artifacts and prevented the sun from moving
+//! independently of the sky reflections.
 
 use std::f32::consts::{PI, TAU};
 
 use glam::Vec3;
 
-/// Resolution of the shared source sky cubemap.
-pub const ENVIRONMENT_SIZE: u32 = 128;
+/// Resolution of the shared source sky cubemap (sky only, no sun).
+pub const ENVIRONMENT_SIZE: u32 = 256;
 /// Resolution of the convolved diffuse irradiance cubemap.
 pub const IRRADIANCE_SIZE: u32 = 32;
 /// Base resolution of the prefiltered specular cubemap.
-pub const PREFILTERED_SIZE: u32 = 128;
+pub const PREFILTERED_SIZE: u32 = 256;
 /// Number of mip levels in the prefiltered specular cubemap.
 ///
 /// The world shaders hardcode `PREFILTERED_MAX_LOD` to `levels - 1`; change
@@ -36,26 +40,13 @@ fn face_bases() -> [(Vec3, Vec3, Vec3); 6] {
     ]
 }
 
-/// Generates the default outdoor sky cubemap.
-pub fn generate_environment_cubemap(size: u32) -> Vec<f32> {
-    let sun_direction = Vec3::new(0.4, 0.8, 0.5).normalize();
-    generate_environment_cubemap_with_sun(size, sun_direction)
-}
-
-/// Generates a sky cubemap whose sun highlight follows `sun_direction`.
+/// Generates the default outdoor sky cubemap (sky only, no sun).
 ///
-/// Renderers pass the scene's primary light direction so reflections line up
-/// with the direct light and its shadows instead of moving independently.
 /// The returned buffer contains six RGBA32F faces in GL/Vulkan layer order,
-/// each `size * size` texels.
-pub fn generate_environment_cubemap_with_sun(size: u32, sun_direction: Vec3) -> Vec<f32> {
+/// each `size * size` texels. The sun is rendered separately as a directional
+/// light (PrimaryLight) with its own shadow map.
+pub fn generate_environment_cubemap(size: u32) -> Vec<f32> {
     let size = size.max(1);
-    let sun_direction = sun_direction.normalize_or_zero();
-    let sun_direction = if sun_direction.length_squared() < 0.5 {
-        Vec3::Y
-    } else {
-        sun_direction
-    };
     let mut pixels = Vec::with_capacity((size * size * 6 * 4) as usize);
 
     for (right, up, forward) in face_bases() {
@@ -76,9 +67,47 @@ pub fn generate_environment_cubemap_with_sun(size: u32, sun_direction: Vec3) -> 
                     horizon.lerp(ground, (-direction.y).powf(0.35))
                 };
 
-                // A broad glow plus a small, soft solar disk. The disk is wide
-                // enough to cover several source texels, which keeps the GGX
-                // prefilter stable instead of producing single-texel sparkles.
+                let color = sky;
+
+                pixels.extend_from_slice(&[color.x, color.y, color.z, 1.0]);
+            }
+        }
+    }
+
+    pixels
+}
+
+/// Generates a sky cubemap with a custom sun direction (for testing/legacy).
+///
+/// @deprecated Use `generate_environment_cubemap` + separate PrimaryLight instead.
+/// The sun is now a separate directional light with its own shadow map.
+pub fn generate_environment_cubemap_with_sun(size: u32, sun_direction: Vec3) -> Vec<f32> {
+    // For backward compatibility, generate sky + sun, but prefer the separated approach.
+    let size = size.max(1);
+    let sun_direction = sun_direction.normalize_or_zero();
+    let sun_direction = if sun_direction.length_squared() < 0.5 {
+        Vec3::Y
+    } else {
+        sun_direction
+    };
+    let mut pixels = Vec::with_capacity((size * size * 6 * 4) as usize);
+
+    for (right, up, forward) in face_bases() {
+        for y in 0..size {
+            for x in 0..size {
+                let u = (x as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+                let v = (y as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+                let direction = (right * u - up * v + forward).normalize();
+
+                let horizon = Vec3::new(0.58, 0.68, 0.84);
+                let zenith = Vec3::new(0.16, 0.32, 0.64);
+                let ground = Vec3::new(0.10, 0.11, 0.13);
+                let sky = if direction.y >= 0.0 {
+                    horizon.lerp(zenith, direction.y.powf(0.6))
+                } else {
+                    horizon.lerp(ground, (-direction.y).powf(0.35))
+                };
+
                 let sun_dot = direction.dot(sun_direction).max(0.0);
                 let disk = smoothstep(0.9986, 0.99985, sun_dot) * 18.0;
                 let glow = sun_dot.powf(24.0) * 0.35;
