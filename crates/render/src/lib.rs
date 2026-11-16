@@ -11,7 +11,7 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 mod frame;
 mod vsync;
 
-pub use frame::{CameraFrame, DebugView, FrameData, RenderStats};
+pub use frame::{CameraFrame, DebugView, FrameData, RenderStats, UiAtlasFrame, UiAtlasRect};
 pub use vsync::VsyncMode;
 
 /// Graphics API used to present the engine's frames.

@@ -34,7 +34,7 @@ Optional methods:
    - `UpdateContext` is constructed,
    - `game.update(ctx)` runs,
    - the console consumes text input if it is open,
-   - the UI draw list is uploaded and the frame is rendered,
+   - the UI is laid out/painted, its glyph atlas is uploaded if needed, and the frame is rendered,
    - frame statistics are recorded.
 5. On window close, the renderer is idled and dropped before the window.
 
@@ -47,7 +47,7 @@ loop with the `AndroidApp` supplied by `android-activity`.
 pub struct UpdateContext<'a> {
     pub dt: f32,
     pub input: &'a Input,
-    pub ui: &'a mut UiDrawList,
+    pub ui: &'a mut Ui,
     pub stats: RenderStats,
     pub viewport: (u32, u32),
     pub world: &'a mut World,
@@ -59,7 +59,8 @@ pub struct UpdateContext<'a> {
   steps after suspend.
 - `input` is a snapshot for this frame. Held keys are persistent; `pressed`
   states, mouse delta, scroll and clicks reset at the start of the next frame.
-- `ui` is cleared before `update` and rendered after the game and console.
+- `ui` is begun before `update`, laid out and painted after the game has
+  built its widgets, and its glyph atlas is uploaded with the frame.
 - `stats` describes the **previous** rendered frame.
 - `viewport` is the framebuffer size in physical pixels.
 - `console_open` lets gameplay suspend controls while the console is open.

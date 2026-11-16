@@ -85,11 +85,11 @@ fn load_png(path: &str) -> anyhow::Result<TextureData> {
 Use the exact dimensions and an RGBA8 buffer. Textures are sampled with
 repeating UVs by the engine shaders.
 
-## Font atlas
+## Font atlas (legacy)
 
-The engine ships a 128×128 bitmap font atlas covering printable ASCII
-(`0x20..=0x7E`). Each glyph occupies an 8×8 cell in a 16-column grid; only the
-top-left 5×7 pixels contain ink.
+The engine still ships the old 128×128 bitmap font atlas covering printable
+ASCII (`0x20..=0x7E`). Each glyph occupies an 8×8 cell in a 16-column grid;
+only the top-left 5×7 pixels contain ink.
 
 ```rust
 pub const FONT_ATLAS_SIZE: u32 = 128;
@@ -101,9 +101,11 @@ pub const FONT_GLYPH_COLUMNS: u32 = 16;
 pub fn font_atlas_rgba8() -> Vec<u8>;
 ```
 
-`font_atlas_rgba8` returns `128 * 128 * 4` bytes. The `ui` crate uses it through
-`UiDrawList::text`, so games rarely call it directly. Characters outside
-printable ASCII are skipped by the text renderer.
+`font_atlas_rgba8` returns `128 * 128 * 4` bytes. It is kept for compatibility:
+the `ui` crate now uses the `text` crate and its dynamic Open Sans glyph atlas.
+Games rarely call this helper directly.
+
+See the [UI API](ui.md#text-engine) for the TrueType text engine.
 
 ## Environment cubemap
 

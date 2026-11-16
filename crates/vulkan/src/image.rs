@@ -56,6 +56,47 @@ impl GpuImage {
         Ok(image)
     }
 
+    /// Single-channel coverage texture used by the UI glyph atlas.
+    pub fn texture_2d_r8(
+        context: &VulkanContext,
+        uploader: &ImmediateCommands,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<Self> {
+        ensure!(
+            pixels.len() == (width * height) as usize,
+            "R8 texture data has an invalid size"
+        );
+        let mut image = Self::allocate_2d(
+            context,
+            width,
+            height,
+            vk::Format::R8_UNORM,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::ImageAspectFlags::COLOR,
+            vk::Filter::LINEAR,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            vk::BorderColor::FLOAT_OPAQUE_BLACK,
+        )?;
+        image.upload_r8(context, uploader, pixels)?;
+        Ok(image)
+    }
+
+    /// Replaces the full contents of an existing single-channel texture.
+    pub fn upload_r8(
+        &mut self,
+        context: &VulkanContext,
+        uploader: &ImmediateCommands,
+        pixels: &[u8],
+    ) -> Result<()> {
+        ensure!(
+            pixels.len() == (self.extent.width * self.extent.height) as usize,
+            "R8 texture data has an invalid size"
+        );
+        self.upload_bytes(context, uploader, pixels)
+    }
+
     pub fn color_target(
         context: &VulkanContext,
         width: u32,
@@ -246,6 +287,15 @@ impl GpuImage {
     }
 
     fn upload_rgba8(
+        &mut self,
+        context: &VulkanContext,
+        uploader: &ImmediateCommands,
+        pixels: &[u8],
+    ) -> Result<()> {
+        self.upload_bytes(context, uploader, pixels)
+    }
+
+    fn upload_bytes(
         &mut self,
         context: &VulkanContext,
         uploader: &ImmediateCommands,

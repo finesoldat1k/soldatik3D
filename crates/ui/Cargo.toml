@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Immediate-mode 2D draw list of the Soldatik3D engine"
+description = "Hybrid immediate-mode UI of the Soldatik3D engine"
 
 [dependencies]
-assets = { path = "../assets" }
+text = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }

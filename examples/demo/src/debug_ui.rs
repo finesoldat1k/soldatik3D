@@ -1,10 +1,9 @@
 //! Debug overlay and mode selector for the demo.
 
 use runtime::glam::Vec3;
+use runtime::ui::Ui;
 use runtime::winit::keyboard::KeyCode;
-use runtime::{DebugView, Input, RenderStats, UiDrawList};
-
-use crate::virtual_joystick::VirtualControls;
+use runtime::{DebugView, Input, RenderStats};
 
 struct Button {
     x: f32,
@@ -81,7 +80,7 @@ impl DebugMenu {
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
-        ui: &mut UiDrawList,
+        ui: &mut Ui,
         input: &Input,
         stats: RenderStats,
         camera_position: Vec3,
@@ -111,12 +110,12 @@ impl DebugMenu {
             }
         }
 
-        let panel_width = 360.0;
-        let panel_height = 360.0;
+        let panel_width = 380.0;
+        let panel_height = 470.0;
         let x = 10.0;
         let y = 10.0;
 
-        // Panel background with subtle border
+        // Panel background with subtle border.
         ui.rect(x, y, panel_width, panel_height, [0.025, 0.03, 0.04, 0.95]);
         ui.rect(x, y, panel_width, 2.0, [1.0, 0.55, 0.1, 1.0]);
         ui.rect(
@@ -127,26 +126,24 @@ impl DebugMenu {
             [0.2, 0.2, 0.25, 1.0],
         );
 
-        // Title bar
+        // Title bar.
         ui.rect(x, y + 2.0, panel_width, 36.0, [0.05, 0.06, 0.08, 0.95]);
-        ui.text("SOLDATIK3D DEBUG", 20.0, 16.0, 2.0, [1.0, 0.75, 0.2, 1.0]);
+        ui.text("SOLDATIK3D DEBUG", 20.0, 16.0, 24.0, [1.0, 0.75, 0.2, 1.0]);
         ui.text(
             &format!("CAM: {}", camera_name),
             20.0,
-            34.0,
-            1.1,
+            38.0,
+            13.0,
             [0.7, 0.75, 0.8, 1.0],
         );
 
         let white = [1.0, 1.0, 1.0, 1.0];
         let dim = [0.6, 0.65, 0.7, 1.0];
         let accent = [1.0, 0.75, 0.2, 1.0];
-        let _green = [0.3, 0.85, 0.4, 1.0];
-        let _red = [0.9, 0.4, 0.3, 1.0];
 
-        // Performance section
+        // Performance section.
         ui.rect(20.0, 55.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
-        ui.text("PERFORMANCE", 20.0, 60.0, 1.2, accent);
+        ui.text("PERFORMANCE", 20.0, 60.0, 14.0, accent);
 
         let perf_lines = [
             format!("FPS:      {:>6.0}", fps),
@@ -156,12 +153,12 @@ impl DebugMenu {
             format!("Draws:    {:>6}", stats.draw_calls),
         ];
         for (index, line) in perf_lines.iter().enumerate() {
-            ui.text(line, 20.0, 80.0 + index as f32 * 18.0, 1.3, white);
+            ui.text(line, 20.0, 80.0 + index as f32 * 18.0, 15.0, white);
         }
 
-        // Camera section
+        // Camera section.
         ui.rect(20.0, 175.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
-        ui.text("CAMERA", 20.0, 180.0, 1.2, accent);
+        ui.text("CAMERA", 20.0, 180.0, 14.0, accent);
 
         let cam_lines = [
             format!("Name:  {}", camera_name),
@@ -171,12 +168,12 @@ impl DebugMenu {
             ),
         ];
         for (index, line) in cam_lines.iter().enumerate() {
-            ui.text(line, 20.0, 200.0 + index as f32 * 18.0, 1.3, white);
+            ui.text(line, 20.0, 200.0 + index as f32 * 18.0, 15.0, white);
         }
 
-        // Debug view section
+        // Debug view section.
         ui.rect(20.0, 245.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
-        ui.text("DEBUG VIEW", 20.0, 250.0, 1.2, accent);
+        ui.text("DEBUG VIEW", 20.0, 250.0, 14.0, accent);
 
         for button in &self.buttons {
             let active = button.view == self.view;
@@ -192,15 +189,15 @@ impl DebugMenu {
             ui.text(
                 button.label,
                 button.x + 8.0,
-                button.y + 8.0,
-                1.3,
+                button.y + 9.0,
+                14.0,
                 text_color,
             );
         }
 
-        // Controls section
+        // Controls section.
         ui.rect(20.0, 285.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
-        ui.text("CONTROLS", 20.0, 290.0, 1.2, accent);
+        ui.text("CONTROLS", 20.0, 290.0, 14.0, accent);
 
         let controls = [
             ("WASD", "Move"),
@@ -218,30 +215,17 @@ impl DebugMenu {
         ];
 
         let col1_x = 20.0;
-        let col2_x = 180.0;
+        let col2_x = 190.0;
         for (i, (key, desc)) in controls.iter().enumerate() {
             let col = if i < 6 { col1_x } else { col2_x };
             let row = if i < 6 { i } else { i - 6 };
-            let y_pos = 310.0 + row as f32 * 16.0;
-            ui.text(key, col, y_pos, 1.1, dim);
-            ui.text(desc, col + 55.0, y_pos, 1.1, white);
+            let y_pos = 310.0 + row as f32 * 18.0;
+            ui.text(key, col, y_pos, 13.0, dim);
+            ui.text(desc, col + 60.0, y_pos, 13.0, white);
         }
 
-        // VSync status
-        ui.rect(20.0, 420.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
-        ui.text("F5: VSync Toggle", 20.0, 425.0, 1.2, accent);
-    }
-
-    /// Draws virtual touch controls for mobile platforms.
-    pub fn draw_virtual_controls(
-        &self,
-        ui: &mut UiDrawList,
-        virtual_controls: &mut VirtualControls,
-        screen_size: Vec3,
-    ) {
-        let is_mobile = cfg!(target_os = "android");
-        if is_mobile {
-            virtual_controls.draw(ui, screen_size.truncate());
-        }
+        // VSync status.
+        ui.rect(20.0, 425.0, panel_width - 40.0, 1.0, [0.2, 0.2, 0.25, 1.0]);
+        ui.text("F5: VSync Toggle", 20.0, 432.0, 14.0, accent);
     }
 }

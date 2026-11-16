@@ -6,10 +6,10 @@
 //! OpenGL clip-space convention (Y up, depth in `[-1, 1]`).
 
 use anyhow::{Context, Result, anyhow, bail};
-use assets::{font_atlas_rgba8, generate_environment_cubemap};
+use assets::generate_environment_cubemap;
 use glam::{Mat4, Vec2, Vec4};
 use glow::HasContext;
-use render::{BackendKind, FrameData, RenderStats, Renderer, VsyncMode};
+use render::{BackendKind, FrameData, RenderStats, Renderer, UiAtlasFrame, VsyncMode};
 use scene::{Aabb, Light, LightUniformBuffer, PrimaryLight, Scene, Vertex};
 use ui::UiVertex;
 
@@ -338,6 +338,7 @@ pub struct OpenGlRenderer {
     light_ubo: glow::Buffer,
 
     font: glow::Texture,
+    font_size: (u32, u32),
     irradiance: glow::Texture,
     prefiltered: glow::Texture,
 
@@ -399,33 +400,10 @@ impl OpenGlRenderer {
             gl.bind_buffer(glow::UNIFORM_BUFFER, None);
         }
 
-        let font_pixels = font_atlas_rgba8();
-        let font_size = (font_pixels.len() / 4).isqrt() as u32;
-        let font = unsafe { texture_2d_rgba8(gl, font_size, font_size, &font_pixels, true) }?;
-        unsafe {
-            gl.bind_texture(glow::TEXTURE_2D, Some(font));
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.bind_texture(glow::TEXTURE_2D, None);
-        }
+        // The UI owns its glyph atlas and uploads it on demand. Start with a
+        // 1x1 white placeholder so the sampler binding is always valid.
+        let font_size = (1, 1);
+        let font = unsafe { texture_2d_r8(gl, 1, 1, &[255]) }?;
 
         let environment = generate_environment_cubemap(128);
         let irradiance = unsafe { cubemap_environment(gl, 128, &environment) }?;
@@ -543,6 +521,7 @@ impl OpenGlRenderer {
             ui_vbo,
             light_ubo,
             font,
+            font_size,
             irradiance,
             prefiltered,
             stats,
@@ -567,6 +546,9 @@ impl OpenGlRenderer {
     }
 
     pub fn render(&mut self, frame: &FrameData<'_>) -> Result<()> {
+        if let Some(atlas) = frame.ui_atlas.as_ref() {
+            self.upload_ui_atlas(atlas)?;
+        }
         let gl = self.context.glow();
         let targets = self
             .targets
@@ -813,6 +795,47 @@ impl OpenGlRenderer {
         Ok(())
     }
 
+    /// Uploads the R8 glyph atlas. The texture is recreated when its size
+    /// changes; otherwise only the dirty sub-rectangles are copied.
+    fn upload_ui_atlas(&mut self, atlas: &UiAtlasFrame<'_>) -> Result<()> {
+        let gl = self.context.glow();
+        let size = (atlas.width.max(1), atlas.height.max(1));
+        if atlas.full || self.font_size != size {
+            unsafe { gl.delete_texture(self.font) };
+            self.font = unsafe { texture_2d_r8(gl, size.0, size.1, atlas.pixels) }?;
+            self.font_size = size;
+            return Ok(());
+        }
+
+        unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.font));
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, size.0 as i32);
+            for rect in atlas.dirty {
+                if rect.w == 0 || rect.h == 0 {
+                    continue;
+                }
+                let offset = (rect.y * size.0 + rect.x) as usize;
+                let Some(slice) = atlas.pixels.get(offset..) else {
+                    continue;
+                };
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    rect.x as i32,
+                    rect.y as i32,
+                    rect.w as i32,
+                    rect.h as i32,
+                    glow::RED,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(slice)),
+                );
+            }
+            gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+        Ok(())
+    }
+
     fn capture_framebuffer(&self) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp = SystemTime::now()
@@ -1013,6 +1036,52 @@ unsafe fn draw_fullscreen(gl: &glow::Context, vao: glow::VertexArray) {
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
     }
+}
+
+unsafe fn texture_2d_r8(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<glow::Texture> {
+    let texture = unsafe { gl.create_texture() }
+        .map_err(|error| anyhow!("failed to create the UI atlas texture: {error}"))?;
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::R8 as i32,
+            width as i32,
+            height as i32,
+            0,
+            glow::RED,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(pixels)),
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
+    Ok(texture)
 }
 
 unsafe fn texture_2d_rgba8(

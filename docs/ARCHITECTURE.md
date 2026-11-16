@@ -21,7 +21,7 @@ prioritizes:
 ```text
 examples/demo ──► runtime ──► scene ──► assets
                      │           ▲
-                     ├─► ui ─────┤
+                     ├─► ui ──► text
                      ├─► render  │
                      ├─► platform│
                      ├─► vulkan ─┘   (optional, desktop)
@@ -32,7 +32,9 @@ Dependency rules:
 
 - `assets` depends on `glam` only.
 - `scene` depends on `assets`, `glam`, `bytemuck`.
-- `ui` depends on `assets`, `glam`, `bytemuck`.
+- `text` depends on `glam` only: SFNT/TTF parsing, rasterization, layout and
+  the dynamic glyph atlas.
+- `ui` depends on `text`, `glam`, `bytemuck`. It no longer depends on `assets`.
 - `render` depends on `assets`, `scene`, `ui`, `glam`, `raw-window-handle`.
 - `platform` depends on `winit`, `render`, `glam`.
 - `vulkan` and `opengl` depend on `render`, `assets`, `scene`, `ui` and their
@@ -57,14 +59,14 @@ pub(crate) struct App<G: Game> {
     world: Option<World>,
     input: Input,
     console: Console,
-    ui: Option<UiDrawList>,
+    ui: Ui,
     ...
 }
 ```
 
 Lifetime rules:
 
-- `App` owns the game, window, renderer, world, input, console and draw list.
+- `App` owns the game, window, renderer, world, input, console and `Ui`.
 - The renderer is declared before the window in the struct and dropped before
   it, because the surface borrows the window's native handles.
 - The game never receives a renderer reference. It can request a screenshot or
@@ -79,8 +81,9 @@ Lifetime rules:
 3. `WindowSurface` is built from raw handles.
 4. The backend is chosen: `SOLDATIK3D_BACKEND`, then `GameConfig::backend`,
    then platform default.
-5. The renderer is created and uploads the scene, lights, material, pipelines
-   and the font atlas.
+5. The renderer is created and uploads the scene, lights, material and
+   pipelines. The renderer starts with a 1×1 white UI texture; the real glyph
+   atlas arrives with the first `FrameData`.
 6. `game.create_world()` is called once. If it returns before the renderer
    exists, the scene is uploaded when the world is set.
 7. `InputMap` from `game.input_map()` is applied once.
@@ -98,12 +101,14 @@ window event
    ├─ keyboard/mouse    → Input
    └─ redraw requested
           │
-          ├─ Input::begin_frame
           ├─ build UpdateContext { dt, input, ui, stats, viewport, world, console_open }
-          ├─ Game::update
+          ├─ Ui::begin_frame(input, viewport)
+          ├─ Game::update (widget calls build the retained tree)
           ├─ execute pending console command (built-in → game)
-          ├─ console draws into UiDrawList
-          ├─ renderer.render(FrameData { camera, ui_vertices, debug_view })
+          ├─ Ui::end_frame (layout + paint retained widgets)
+          ├─ console draws raw text/rectangles on top
+          ├─ renderer.render(FrameData { camera, ui_vertices, ui_atlas, debug_view })
+          ├─ Ui::mark_atlas_uploaded after a successful render
           ├─ stats recorded
           └─ frame budget / exit checks
 ```
@@ -147,9 +152,10 @@ pub trait Renderer {
 }
 ```
 
-`FrameData` is intentionally small: camera, UI vertices, debug view. Static
-resources live in the backend. This avoids rebuilding pipelines or descriptor
-sets per frame and makes the interface easy to implement for a new API.
+`FrameData` is intentionally small: camera, UI vertices, an optional R8 glyph
+atlas update and the debug view. Static resources live in the backend. This
+avoids rebuilding pipelines or descriptor sets per frame and makes the
+interface easy to implement for a new API.
 
 ### Vulkan
 
@@ -188,10 +194,32 @@ engine's OpenGL-style projection at its boundary.
 
 ## UI and console
 
-`UiDrawList` produces `UiVertex { position, color, uv }` in NDC. Rectangles use
-a solid white texel; text samples the 128×128 bitmap font atlas. The runtime
-clears the list before `Game::update`, the game draws, the console draws on top,
-and the renderer uploads the final list.
+The UI is hybrid immediate/retained. Games call widgets every frame; the `Ui`
+object owns an arena tree keyed by stable ids, so hover/press state, scroll
+offsets, dropdown state and text caches survive between frames without
+`Rc<RefCell<_>>`.
+
+- `Ui::begin_frame` resets per-frame node flags and builds a pointer snapshot
+  from `platform::Input`.
+- Widget calls update the tree and return `Response { hovered, pressed,
+  clicked, changed, drag_delta, .. }`.
+- `Ui::end_frame` runs the flexbox-style layout, paints the tree and defers
+  dropdown popups so they render above everything.
+- The console is drawn after `end_frame` as raw text/rectangles, keeping it on
+  top of game HUDs.
+- `UiDrawList` converts rectangles and TrueType glyphs into
+  `UiVertex { position, color, uv }` in NDC. Solid geometry uses UV `(0, 0)`;
+  glyphs sample a single-channel R8 atlas.
+
+The glyph atlas is owned by `text::TextSystem`. It starts at 512×512, grows by
+doubling (up to 2048×4096), and tracks dirty rectangles. OpenGL recreates the
+texture on growth and uploads only dirty regions afterwards; Vulkan recreates
+the image and re-uploads the (small, single-channel) texture on updates. The
+runtime marks the atlas as uploaded only after `Renderer::render` succeeds.
+
+Pointer ownership is explicit: a widget (or joystick / touch camera) claims the
+pointer that pressed it, and `Ui::captures_pointer` tells the game to suspend
+camera look and world clicks for that frame.
 
 The console is a separate state machine (`open`, `input`, `history`,
 `completion`, `pending`). It does not execute commands inside the key handler:
@@ -202,8 +230,10 @@ the world and renderer are available.
 
 `platform::Input` aggregates events into sets and deltas. `begin_frame` clears
 one-frame state. `InputMap` is a plain `HashMap<String, Vec<KeyCode>>`; actions
-are resolved at query time. There is no event queue exposed to games, no
-gamepad/touch support and no runtime rebinding.
+are resolved at query time. Touch events are aggregated into `TouchState`
+records and exposed through the same `Input` object; `platform::Input`
+implements `ui::TouchInputProvider`. There is no event queue exposed to games,
+no gamepad support and no runtime rebinding.
 
 ## Android
 
@@ -245,8 +275,10 @@ and exits the thread.
   select it in `runtime::backend`.
 - New game command: implement `Game::command_help` and `Game::command`.
 - New input action: add a binding in `Game::input_map`.
-- New UI element: compose rectangles/text in game code; add a method to
-  `UiDrawList` if it belongs in the engine.
+- New UI widget: add a module under `crates/ui/src/widgets/`, implement it as
+  a method on `Ui`, and export its style from `widgets/mod.rs`.
+- New font: call `TextSystem::load_font` at runtime, or replace the embedded
+  Open Sans assets in `crates/text/assets/`.
 - New platform: add `TargetOS` and `TargetArch` variants, a backend path, and
   build tooling. macOS/iOS/Web are not currently planned.
 

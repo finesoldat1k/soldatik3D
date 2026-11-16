@@ -8,7 +8,7 @@ see the `runtime` facade; graphics APIs are implementation details.
 ```text
 examples/demo ──► runtime ──► scene ──► assets
                      │           ▲
-                     ├─► ui ─────┤
+                     ├─► ui ──► text
                      ├─► render  │
                      ├─► platform│
                      ├─► vulkan ─┘   (feature)
@@ -20,7 +20,8 @@ examples/demo ──► runtime ──► scene ──► assets
 CPU-side data shared by all backends:
 
 - `TextureData` (RGBA8 pixels, `white()`, `from_rgb8`)
-- a 128×128 bitmap font atlas (`font_atlas_rgba8`)
+- a legacy 128×128 bitmap font atlas (`font_atlas_rgba8`, kept for
+  compatibility with older draw-list examples)
 - a procedural environment cubemap (`generate_environment_cubemap`)
 
 No graphics API or windowing dependency.
@@ -38,12 +39,20 @@ Platform-independent world model:
 
 The scene is CPU data. It contains no GPU handles.
 
+### `text`
+
+Dependency-free TrueType stack: SFNT/TTF parsing, `cmap`, `glyf`, `kern`,
+anti-aliased rasterization, layout and a growable R8 glyph atlas. Open Sans
+Regular and Bold are embedded; external TTFs can be loaded at runtime.
+
 ### `ui`
 
-`UiDrawList` converts screen-space rectangles and bitmap text into
-backend-neutral `UiVertex` data. Coordinates are physical pixels with the origin
-in the top-left corner. The runtime clears the list before `Game::update` and
-uploads it after the game and console have drawn.
+Hybrid immediate-mode UI. Widgets are called every frame and return
+`Response`; a retained arena tree holds stable ids, state and layout. It
+provides flexbox-style layout, themed buttons, labels, toggles, sliders,
+dropdowns, progress bars, scroll panels, virtual joystick and touch camera.
+`UiDrawList` converts the result into backend-neutral `UiVertex` data.
+Coordinates are physical pixels with the origin in the top-left corner.
 
 ### `render`
 
@@ -63,8 +72,8 @@ pub trait Renderer {
 }
 ```
 
-`FrameData` contains only per-frame state: camera matrices, UI vertices and the
-debug view. Everything static (meshes, lights, material, pipelines) is built
+`FrameData` contains only per-frame state: camera matrices, UI vertices, an
+optional R8 glyph atlas update (`UiAtlasFrame`) and the debug view. Everything static (meshes, lights, material, pipelines) is built
 once when the renderer is created.
 
 `WindowSurface` wraps `raw_window_handle` handles plus width/height. It is the
@@ -127,11 +136,12 @@ winit event
    ├─ resize         → Renderer::resize
    └─ redraw
         │
-        ├─ Input::begin_frame
+        ├─ Ui::begin_frame(input, viewport)
         ├─ Game::update(UpdateContext { input, world, ui, stats, dt, ... })
         ├─ console update + submit
-        ├─ UiDrawList → renderer
-        ├─ FrameData { camera, ui_vertices, debug_view }
+        ├─ Ui::end_frame (layout + paint)
+        ├─ console raw drawing on top
+        ├─ FrameData { camera, ui_vertices, ui_atlas, debug_view }
         └─ Renderer::render
 ```
 

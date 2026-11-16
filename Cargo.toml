@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/assets",
+    "crates/text",
     "crates/scene",
     "crates/ui",
     "crates/render",
@@ -41,6 +42,7 @@ console = "0.15"
 fs_extra = "1.3"
 
 assets = { path = "crates/assets" }
+text = { path = "crates/text" }
 scene = { path = "crates/scene" }
 ui = { path = "crates/ui" }
 render = { path = "crates/render" }

@@ -42,8 +42,12 @@ pub struct Input {
     mouse_delta: Vec2,
     scroll_delta: f32,
     cursor_position: Vec2,
-    primary_clicked: bool,
+    primary_down: bool,
+    primary_pressed: bool,
+    primary_released: bool,
     cursor_captured: bool,
+    /// Set once the platform reports a touch; stays true for the session.
+    touch_mode: bool,
     suppressed_motion_frames: u8,
     text: String,
     /// Active action bindings for this frame.
@@ -114,8 +118,24 @@ impl Input {
         self.cursor_position
     }
 
+    /// Whether the left mouse button was pressed this frame.
     pub fn primary_clicked(&self) -> bool {
-        self.primary_clicked
+        self.primary_pressed
+    }
+
+    /// Whether the left mouse button is currently held.
+    pub fn primary_down(&self) -> bool {
+        self.primary_down
+    }
+
+    /// Whether the left mouse button was released this frame.
+    pub fn primary_released(&self) -> bool {
+        self.primary_released
+    }
+
+    /// Whether any touch has been seen during this session.
+    pub fn touch_mode(&self) -> bool {
+        self.touch_mode
     }
 
     pub fn cursor_captured(&self) -> bool {
@@ -156,8 +176,20 @@ impl Input {
         self.cursor_position = position;
     }
 
+    /// Updates the left mouse button. Press and release edges are exposed for
+    /// one frame, so widgets can implement click-on-release semantics.
+    pub fn set_primary_down(&mut self, down: bool) {
+        if down && !self.primary_down {
+            self.primary_pressed = true;
+        } else if !down && self.primary_down {
+            self.primary_released = true;
+        }
+        self.primary_down = down;
+    }
+
+    /// Compatibility shim for callers that only report click state.
     pub fn set_primary_clicked(&mut self, clicked: bool) {
-        self.primary_clicked = clicked;
+        self.set_primary_down(clicked);
     }
 
     pub fn set_cursor_captured(&mut self, captured: bool) {
@@ -192,6 +224,7 @@ impl Input {
 
     /// Adds a new touch point.
     pub fn add_touch(&mut self, id: u64, position: Vec2) {
+        self.touch_mode = true;
         let touch = TouchState {
             id,
             position,
@@ -223,7 +256,8 @@ impl Input {
         self.pressed.clear();
         self.mouse_delta = Vec2::ZERO;
         self.scroll_delta = 0.0;
-        self.primary_clicked = false;
+        self.primary_pressed = false;
+        self.primary_released = false;
         self.text.clear();
         self.suppressed_motion_frames = self.suppressed_motion_frames.saturating_sub(1);
 
@@ -259,6 +293,22 @@ impl ui::TouchInputProvider for Input {
 
     fn primary_clicked(&self) -> bool {
         self.primary_clicked()
+    }
+
+    fn primary_down(&self) -> bool {
+        self.primary_down()
+    }
+
+    fn primary_released(&self) -> bool {
+        self.primary_released()
+    }
+
+    fn scroll_delta(&self) -> f32 {
+        self.scroll_delta()
+    }
+
+    fn touch_mode(&self) -> bool {
+        self.touch_mode()
     }
 
     fn mouse_delta(&self) -> Vec2 {

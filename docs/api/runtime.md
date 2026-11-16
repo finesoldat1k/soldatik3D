@@ -134,7 +134,7 @@ the target.
 pub struct UpdateContext<'a> {
     pub dt: f32,
     pub input: &'a Input,
-    pub ui: &'a mut UiDrawList,
+    pub ui: &'a mut Ui,
     pub stats: RenderStats,
     pub viewport: (u32, u32),
     pub world: &'a mut World,
@@ -146,7 +146,7 @@ pub struct UpdateContext<'a> {
 |-------|---------|
 | `dt` | Seconds since the previous frame, clamped against long suspensions |
 | `input` | Keyboard/mouse snapshot for this frame |
-| `ui` | Immediate-mode draw list, cleared before every update and rendered after the console |
+| `ui` | Hybrid immediate-mode UI; call widgets during `update` and read their `Response` |
 | `stats` | Counters of the **previous** rendered frame |
 | `viewport` | Framebuffer size in physical pixels |
 | `world` | Engine-owned world; move cameras, spawn and select them here |
@@ -157,7 +157,8 @@ fn update(&mut self, ctx: &mut UpdateContext<'_>) {
     if ctx.console_open {
         return; // gameplay input is suspended while typing commands
     }
-    ctx.ui.text("HELLO", 20.0, 20.0, 1.0, [1.0; 4]);
+    ctx.ui.button("START");
+    ctx.ui.text("HELLO", 20.0, 20.0, 18.0, [1.0; 4]);
 }
 ```
 

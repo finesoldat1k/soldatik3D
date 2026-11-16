@@ -4,7 +4,7 @@
 //! commands and delegates unknown ones to [`crate::Game::command`], so games do
 //! not have to reimplement camera spawning or selection.
 
-use ui::UiDrawList;
+use ui::Ui;
 
 const MAX_MESSAGES: usize = 200;
 const VISIBLE_MESSAGES: usize = 12;
@@ -172,26 +172,36 @@ impl Console {
     }
 
     /// Draws either the open console or a small shortcut hint.
-    pub fn draw(&self, ui: &mut UiDrawList) {
+    pub fn draw(&self, ui: &mut Ui) {
         if !self.open {
             let hint = "F1 CONSOLE";
-            let scale = 1.2;
-            let width = UiDrawList::text_width(hint, scale) + 12.0;
+            let font_size = 12.0;
+            let width = ui.text_width(hint, font_size) + 16.0;
             let x = ui.width() - width - 12.0;
             let y = 12.0;
-            ui.rect(x, y, width, 20.0, [0.03, 0.035, 0.045, 0.65]);
-            ui.text(hint, x + 6.0, y + 5.0, scale, [0.75, 0.75, 0.78, 0.9]);
+            ui.rect(x, y, width, 24.0, [0.03, 0.035, 0.045, 0.65]);
+            ui.text(hint, x + 8.0, y + 6.0, font_size, [0.75, 0.75, 0.78, 0.9]);
             return;
         }
 
-        let panel_width = (ui.width() - 24.0).min(780.0);
-        let line_height = 16.0;
+        let panel_width = (ui.width() - 24.0).min(820.0);
+        let line_height = 18.0;
         let message_count = self.messages.len().min(VISIBLE_MESSAGES);
-        let panel_height = 34.0 + message_count as f32 * line_height + 50.0;
+        let suggestion_count = self
+            .completion
+            .as_ref()
+            .map(|(_, matches, _)| matches.len().min(6))
+            .unwrap_or(0);
+        let suggestions_height = if suggestion_count > 0 {
+            suggestion_count as f32 * 20.0 + 10.0
+        } else {
+            0.0
+        };
+        let panel_height =
+            34.0 + message_count as f32 * line_height + 12.0 + suggestions_height + 52.0;
         let x = 12.0;
         let y = 12.0;
 
-        // Background with subtle gradient effect
         ui.rect(x, y, panel_width, panel_height, [0.02, 0.025, 0.035, 0.96]);
         ui.rect(x, y, panel_width, 2.0, [1.0, 0.55, 0.1, 1.0]);
         ui.rect(
@@ -202,20 +212,22 @@ impl Console {
             [0.25, 0.25, 0.3, 1.0],
         );
 
-        // Title bar
-        ui.rect(x, y + 2.0, panel_width, 28.0, [0.05, 0.06, 0.08, 0.9]);
+        // Title bar.
+        ui.rect(x, y + 2.0, panel_width, 30.0, [0.05, 0.06, 0.08, 0.9]);
         ui.text(
             "SOLDATIK3D CONSOLE",
             x + 10.0,
-            y + 7.0,
-            1.4,
+            y + 8.0,
+            18.0,
             [1.0, 0.75, 0.2, 1.0],
         );
+        let help = "F1 CLOSE  |  TAB autocomplete  |  UP/DOWN history";
+        let help_width = ui.text_width(help, 12.0);
         ui.text(
-            "F1 CLOSE  |  TAB autocomplete  |  ↑↓ history",
-            x + panel_width - 300.0,
-            y + 9.0,
-            1.0,
+            help,
+            x + panel_width - help_width - 10.0,
+            y + 11.0,
+            12.0,
             [0.6, 0.65, 0.7, 1.0],
         );
 
@@ -228,29 +240,29 @@ impl Console {
             } else {
                 [0.85, 0.88, 0.92, 1.0]
             };
-            let text = fit(&line.text, panel_width - 20.0, 1.2);
+            let text = fit(ui, &line.text, panel_width - 20.0, 14.0);
             ui.text(
                 &text,
                 x + 10.0,
-                y + 34.0 + row as f32 * line_height,
-                1.2,
+                y + 36.0 + row as f32 * line_height,
+                14.0,
                 color,
             );
         }
 
-        // Autocomplete suggestions
-        let messages_y = y + 34.0 + message_count as f32 * line_height;
+        // Autocomplete suggestions.
+        let messages_y = y + 36.0 + message_count as f32 * line_height;
         if let Some((_prefix, matches, index)) = &self.completion {
             let suggestion_y = messages_y + 4.0;
-            let suggestion_count = matches.len().min(6);
+            let visible = matches.len().min(6);
             ui.rect(
                 x + 8.0,
                 suggestion_y,
                 panel_width - 16.0,
-                suggestion_count as f32 * 18.0 + 8.0,
+                visible as f32 * 20.0 + 6.0,
                 [0.08, 0.1, 0.14, 0.95],
             );
-            for (i, m) in matches.iter().take(suggestion_count).enumerate() {
+            for (i, m) in matches.iter().take(visible).enumerate() {
                 let is_selected = i == *index;
                 let color = if is_selected {
                     [1.0, 0.9, 0.3, 1.0]
@@ -264,53 +276,65 @@ impl Console {
                 };
                 ui.rect(
                     x + 10.0,
-                    suggestion_y + 4.0 + i as f32 * 18.0,
+                    suggestion_y + 3.0 + i as f32 * 20.0,
                     panel_width - 20.0,
-                    18.0,
+                    20.0,
                     bg_color,
                 );
                 ui.text(
                     m,
                     x + 14.0,
-                    suggestion_y + 5.0 + i as f32 * 18.0,
-                    1.1,
+                    suggestion_y + 5.0 + i as f32 * 20.0,
+                    13.0,
                     color,
                 );
             }
         }
 
-        let input_y = y + panel_height - 40.0;
+        let input_y = y + panel_height - 44.0;
         ui.rect(
             x + 8.0,
             input_y - 3.0,
             panel_width - 16.0,
-            28.0,
+            32.0,
             [0.06, 0.07, 0.09, 1.0],
         );
         ui.rect(
             x + 10.0,
             input_y + 2.0,
             panel_width - 20.0,
-            22.0,
+            24.0,
             [0.03, 0.04, 0.06, 1.0],
         );
         let prompt = format!("> {}_", self.input);
         ui.text(
             &prompt,
             x + 16.0,
-            input_y + 6.0,
-            1.3,
+            input_y + 7.0,
+            15.0,
             [0.95, 0.97, 1.0, 1.0],
         );
     }
 }
 
-fn fit(text: &str, max_width: f32, scale: f32) -> String {
-    if UiDrawList::text_width(text, scale) <= max_width {
+fn fit(ui: &Ui, text: &str, max_width: f32, size: f32) -> String {
+    if ui.text_width(text, size) <= max_width {
         return text.to_owned();
     }
-    let max_chars = (max_width / (6.0 * scale)).floor().max(1.0) as usize;
-    let mut result: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let ellipsis = ui.text_width("...", size);
+    let mut low = 0usize;
+    let mut high = chars.len();
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let candidate: String = chars[..mid].iter().collect();
+        if ui.text_width(&candidate, size) + ellipsis <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut result: String = chars[..low].iter().collect();
     result.push_str("...");
     result
 }

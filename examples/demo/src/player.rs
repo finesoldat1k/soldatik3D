@@ -127,20 +127,14 @@ pub fn default_input_map() -> InputMap {
 impl Player {
     /// Updates the player with desktop input (mouse + keyboard).
     pub fn update(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
-        self.update_with_virtual(dt, input, colliders, None);
+        self.update_with_virtual(dt, input, colliders);
     }
 
-    /// Updates the player with desktop input and optional virtual controls for mobile.
-    pub fn update_with_virtual(
-        &mut self,
-        dt: f32,
-        input: &Input,
-        colliders: &[Aabb],
-        virtual_controls: Option<&crate::virtual_joystick::VirtualControls>,
-    ) {
-        // Handle fly toggle from both keyboard and virtual button
-        let fly_toggle = input.action_pressed("fly_toggle")
-            || virtual_controls.is_some_and(|vc| vc.fly_pressed());
+    /// Updates the player with desktop input. Touch controls feed the same
+    /// movement path through [`Player::update_with_virtual_mobile`].
+    fn update_with_virtual(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
+        // Handle fly toggle from the keyboard.
+        let fly_toggle = input.action_pressed("fly_toggle");
         if fly_toggle {
             self.is_flying = !self.is_flying;
             self.velocity = Vec3::ZERO;
@@ -176,15 +170,11 @@ impl Player {
             .pitch
             .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
 
-        // Determine movement input from keyboard or virtual joystick
-        let move_forward = input.action_down("move_forward")
-            || virtual_controls.is_some_and(|vc| vc.movement().y < -0.1);
-        let move_backward = input.action_down("move_backward")
-            || virtual_controls.is_some_and(|vc| vc.movement().y > 0.1);
-        let move_left = input.action_down("move_left")
-            || virtual_controls.is_some_and(|vc| vc.movement().x < -0.1);
-        let move_right = input.action_down("move_right")
-            || virtual_controls.is_some_and(|vc| vc.movement().x > 0.1);
+        // Determine movement input from the keyboard.
+        let move_forward = input.action_down("move_forward");
+        let move_backward = input.action_down("move_backward");
+        let move_left = input.action_down("move_left");
+        let move_right = input.action_down("move_right");
 
         let sprinting = input.action_down("sprint");
         let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
@@ -223,8 +213,7 @@ impl Player {
             self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
 
-            let jump_down =
-                input.action_down("jump") || virtual_controls.is_some_and(|vc| vc.jump_pressed());
+            let jump_down = input.action_down("jump");
             if jump_down {
                 self.velocity.y += 60.0 * dt;
             }
@@ -243,8 +232,7 @@ impl Player {
             self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
             self.velocity.y -= GRAVITY * dt;
 
-            let jump_pressed =
-                input.action_down("jump") || virtual_controls.is_some_and(|vc| vc.jump_pressed());
+            let jump_pressed = input.action_down("jump");
             if self.on_ground && jump_pressed {
                 self.velocity.y = JUMP_FORCE;
                 self.on_ground = false;

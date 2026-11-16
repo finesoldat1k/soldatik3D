@@ -4,6 +4,35 @@ All notable changes to Soldatik3D are documented here.
 
 ## Unreleased
 
+### Added
+
+- `text` crate: dependency-free TrueType engine with SFNT/`cmap`/`glyf`/`kern`
+  parsing, anti-aliased rasterization, text layout and a growable R8 glyph
+  atlas. Open Sans Regular/Bold (Latin + Cyrillic, Apache-2.0) are embedded.
+- Hybrid immediate-mode `ui` crate: retained arena tree with stable ids,
+  flexbox-style layout, themed buttons, labels, toggles, sliders, dropdowns,
+  progress bars, scroll panels, virtual joystick and touch camera.
+- `FrameData::ui_atlas` carries optional R8 glyph-atlas updates; OpenGL uploads
+  dirty regions, Vulkan re-uploads the single-channel texture on change.
+- `platform::Input` exposes press/release edges, `primary_down` and a persistent
+  `touch_mode` flag; the runtime forwards mouse press/release events.
+
+### Changed
+
+- `UpdateContext::ui` is now `&mut ui::Ui`. The runtime begins the UI frame
+  before `Game::update`, lays out and paints the retained tree afterwards, then
+  draws the console on top and uploads the glyph atlas only after a successful
+  render.
+- `runtime` re-exports the `ui` crate (`runtime::ui`), so games can build
+  interfaces without a direct dependency on `ui`.
+- The demo HUD and settings panel use engine widgets; touch buttons take
+  priority over the right-half touch-camera gesture.
+
+### Removed
+
+- The legacy UI widget system and bitmap-font text path. The old
+  `font_atlas_rgba8` helper remains for compatibility.
+
 ### Fixed
 
 - Android Gradle builds: corrected the wrapper script, pinned Gradle 8.10.2 and

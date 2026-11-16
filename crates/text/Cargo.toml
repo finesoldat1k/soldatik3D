@@ -1,0 +1,10 @@
+[package]
+name = "text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dependency-free TrueType text engine of the Soldatik3D engine"
+
+[dependencies]
+glam = { workspace = true }

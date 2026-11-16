@@ -129,11 +129,17 @@ impl CameraFrame {
 pub struct FrameData<'a> {
     pub camera: CameraFrame,
     pub ui_vertices: &'a [UiVertex],
+    pub ui_atlas: Option<UiAtlasFrame<'a>>,
     pub debug_view: DebugView,
 }
 ```
 
 `projection` already includes the current viewport aspect ratio.
+
+`ui_atlas` is `Some` only when the UI rasterized new glyphs. It carries the
+single-channel R8 coverage texture plus dirty rectangles, so backends can
+skip the upload on most frames. `UiAtlasFrame` deliberately uses plain pixels
+instead of depending on the `text` crate.
 
 ## `Renderer`
 
@@ -189,7 +195,8 @@ Both backends render the same sequence:
 4. **SSAO** — half-resolution screen-space ambient occlusion from depth.
 5. **Bloom** — bright-pass extraction and separable Gaussian blur.
 6. **Composite** — ACES tone mapping and gamma correction.
-7. **UI pass** — `UiDrawList` vertices with the bitmap font atlas.
+7. **UI pass** — `Ui` vertices with the R8 glyph atlas (solid geometry uses
+   a reserved transparent UV, glyphs sample coverage and tint it).
 
 Camera and shadow frustum culling skip meshes outside the view. The Vulkan HDR
 target is `R16G16B16A16_SFLOAT`; OpenGL ES falls back to RGBA8 when

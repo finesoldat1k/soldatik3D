@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use ash::{Device, vk};
-use assets::{font_atlas_rgba8, generate_environment_cubemap};
+use assets::generate_environment_cubemap;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
-use render::{BackendKind, FrameData, RenderStats, Renderer, VsyncMode, WindowSurface};
+use render::{
+    BackendKind, FrameData, RenderStats, Renderer, UiAtlasFrame, VsyncMode, WindowSurface,
+};
 use scene::{Aabb, LightUniformBuffer, Scene, Vertex};
 use ui::UiVertex;
 
@@ -253,6 +255,7 @@ pub struct VulkanRenderer {
     ibl_irradiance: GpuImage,
     ibl_prefiltered: GpuImage,
     font: GpuImage,
+    uploader: ImmediateCommands,
     light_buffer: GpuBuffer,
     ui_buffer: GpuBuffer,
     ui_capacity: usize,
@@ -340,17 +343,10 @@ impl VulkanRenderer {
         let ibl_prefiltered =
             GpuImage::cubemap_rgba32f(&context, &uploader, 128, &irradiance_pixels)?;
 
-        let font_pixels = font_atlas_rgba8();
-        let font_size = (font_pixels.len() / 4).isqrt() as u32;
-        let font = GpuImage::texture_2d(
-            &context,
-            &uploader,
-            font_size,
-            font_size,
-            &font_pixels,
-            true,
-            false,
-        )?;
+        // The UI owns the glyph atlas and uploads it when new glyphs appear.
+        // A 1x1 white texture keeps the descriptor set valid before the first
+        // frame provides real atlas data.
+        let font = GpuImage::texture_2d_r8(&context, &uploader, 1, 1, &[255])?;
 
         let ui_capacity = INITIAL_UI_CAPACITY;
         let ui_buffer = GpuBuffer::host_visible(
@@ -622,6 +618,7 @@ impl VulkanRenderer {
             ibl_irradiance,
             ibl_prefiltered,
             font,
+            uploader,
             light_buffer,
             ui_buffer,
             ui_capacity,
@@ -917,6 +914,10 @@ impl VulkanRenderer {
     }
 
     fn upload_per_frame_data(&mut self, frame: &FrameData<'_>, _frame_index: usize) -> Result<()> {
+        if let Some(atlas) = frame.ui_atlas.as_ref() {
+            self.update_ui_atlas(atlas)?;
+        }
+
         let lights = LightUniformBuffer::from_nearest(&self.scene.lights, frame.camera.position);
         self.light_buffer.write_pod(&lights)?;
 
@@ -935,6 +936,39 @@ impl VulkanRenderer {
             self.ui_buffer.write_slice(frame.ui_vertices)?;
         }
         self.ui_vertex_count = frame.ui_vertices.len() as u32;
+        Ok(())
+    }
+
+    /// Recreates or refreshes the R8 glyph atlas and keeps the UI descriptor
+    /// set pointing at the current image view.
+    fn update_ui_atlas(&mut self, atlas: &UiAtlasFrame<'_>) -> Result<()> {
+        let width = atlas.width.max(1);
+        let height = atlas.height.max(1);
+        let recreate =
+            atlas.full || self.font.extent.width != width || self.font.extent.height != height;
+        if recreate {
+            // Replacing the image invalidates its old view in `ui_set`, which
+            // may still be referenced by frames in flight. Growth is rare, so
+            // waiting for the device here is cheaper than per-frame sets.
+            unsafe { self.context.device.device_wait_idle()? };
+            self.font = GpuImage::texture_2d_r8(
+                &self.context,
+                &self.uploader,
+                width,
+                height,
+                atlas.pixels,
+            )?;
+            descriptor::update_single(
+                &self.context.device,
+                self.ui_set,
+                self.font.sampler,
+                self.font.view,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+        } else {
+            self.font
+                .upload_r8(&self.context, &self.uploader, atlas.pixels)?;
+        }
         Ok(())
     }
 

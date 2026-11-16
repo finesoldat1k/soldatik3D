@@ -1,7 +1,7 @@
 use platform::{Input, InputMap};
 use render::{BackendKind, DebugView, RenderStats, VsyncMode};
 use scene::World;
-use ui::UiDrawList;
+use ui::Ui;
 
 /// Window and runtime options requested by a game.
 #[derive(Clone, Debug)]
@@ -81,9 +81,9 @@ pub struct UpdateContext<'a> {
     pub dt: f32,
     /// Keyboard, mouse and cursor state for this frame.
     pub input: &'a Input,
-    /// Immediate-mode UI draw list, in physical pixels. The engine clears it
-    /// before every update and uploads it after the game and console have run.
-    pub ui: &'a mut UiDrawList,
+    /// Immediate-mode UI. The engine begins the frame before `update` and
+    /// finishes layout/painting after the console has run.
+    pub ui: &'a mut Ui,
     /// Statistics of the previous rendered frame.
     pub stats: RenderStats,
     /// Current framebuffer size in physical pixels.

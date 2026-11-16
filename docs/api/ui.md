@@ -1,162 +1,300 @@
 # UI API
 
-The `ui` crate is a small immediate-mode draw list. It does not own layout,
-widgets or input handling: a game appends rectangles and text every frame and
-the runtime uploads the vertices after `Game::update`.
+The `ui` crate provides a hybrid immediate-mode UI. Widgets are called every
+frame and return a [`Response`], while a retained arena tree stores stable ids,
+hover/press state, scroll offsets, dropdown state and the text cache.
 
 ```rust
-use runtime::{UiDrawList, UiVertex};
+use runtime::ui::{Layout, Response, Ui};
 ```
 
-`UiDrawList` is also available through `UpdateContext::ui`.
+`Ui` is available as `UpdateContext::ui`. The runtime begins the frame before
+`Game::update`, lays out and paints the retained tree when the game is done,
+draws the console on top, and uploads the resulting vertices plus the glyph
+atlas to the renderer.
 
 ## Coordinates
 
 - Origin is the **top-left** corner of the framebuffer.
-- Units are physical pixels, not logical points. Multiply by the display scale
-  if you design in logical pixels.
+- Units are physical pixels.
 - `x` grows right, `y` grows down.
-- There is no clipping, scissor or transform stack. Anything outside the
-  viewport is clipped by the GPU.
+- Every widget is clipped by its parent and by scroll panels.
+
+## Frame lifecycle
 
 ```rust
-let width = ctx.viewport.0 as f32;
-let height = ctx.viewport.1 as f32;
-ctx.ui.rect(0.0, 0.0, width, 48.0, [0.0, 0.0, 0.0, 0.7]);
+// The runtime does this for every game:
+ui.begin_frame(&input, viewport); // reset tree state, build input snapshot
+game.update(&mut ctx);            // call widgets, read responses
+ui.end_frame();                   // layout + paint into the draw list
+renderer.render(&FrameData { ui_vertices: ui.draw().vertices(), .. });
 ```
 
-## `UiDrawList`
+`begin_frame` and `end_frame` are engine-owned; games only build widgets inside
+`Game::update`. `begin_frame_snapshot(UiInput, Vec2)` is available for tests and
+replay tools that do not have a platform input snapshot.
+
+The default font is embedded Open Sans Regular/Bold (Latin + Cyrillic). Font
+sizes are pixels, **not** the old 1.0/1.5/2.0 bitmap scales.
+
+## Layout
+
+Layouts are a compact flexbox subset: row/column direction, auto/fixed/percent
+sizing, `Fill` children, gaps, padding, margins, alignment and absolute
+placement.
 
 ```rust
-impl UiDrawList {
-    pub fn new(viewport_width: u32, viewport_height: u32) -> Self;
-    pub fn clear(&mut self);
-    pub fn resize(&mut self, viewport_width: u32, viewport_height: u32);
-    pub fn width(&self) -> f32;
-    pub fn height(&self) -> f32;
-    pub fn vertices(&self) -> &[UiVertex];
-    pub fn is_empty(&self) -> bool;
-    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]);
-    pub fn text(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]);
-    pub fn text_width(text: &str, scale: f32) -> f32;
-    pub fn crosshair(&mut self);
-}
-```
-
-| Method | Description |
-|--------|-------------|
-| `rect` | Solid rectangle; six vertices |
-| `text` | Bitmap text at the top-left of the first glyph |
-| `text_width` | Width in pixels at a given scale |
-| `crosshair` | 4×4 white square at the viewport center |
-| `clear` | Drop all vertices (called by the engine every frame) |
-| `resize` | Update the viewport size used for NDC conversion |
-
-Every rectangle and glyph adds six vertices. There is no batching limit in the
-engine, but very large UI text still costs one quad per character.
-
-## Text
-
-`text` renders printable ASCII (`0x20..=0x7E`) with the built-in 5×7 font.
-`scale` multiplies both glyph size and advance:
-
-| Scale | Approximate character cell |
-|-------|----------------------------|
-| `1.0` | 5×7 pixels + 1 pixel advance |
-| `1.5` | 7.5×10.5 pixels |
-| `2.0` | 10×14 pixels |
-
-Characters outside the range are skipped. To center text:
-
-```rust
-let label = "PAUSED";
-let scale = 2.0;
-let width = UiDrawList::text_width(label, scale);
-ctx.ui.text(
-    label,
-    (ctx.viewport.0 as f32 - width) * 0.5,
-    80.0,
-    scale,
-    [1.0, 0.9, 0.4, 1.0],
+ui.panel(
+    Layout::column().padding(16.0).gap(8.0).width(320.0),
+    |ui| {
+        ui.heading("Settings");
+        ui.label("Vertical sync");
+        ui.separator();
+    },
 );
 ```
 
-`text_width` counts only printable characters, matching `text`.
+| Type | Meaning |
+|------|---------|
+| `Size::Auto` | Fit the measured content |
+| `Size::Fixed(px)` | Exact pixels |
+| `Size::Percent(p)` | Percentage of the parent content box |
+| `Size::Fill` | Share leftover space with other fill siblings |
 
-## Colors
+`Layout` builder highlights:
 
-Colors are linear RGBA in `0.0..=1.0`; alpha is blended. The UI pass runs after
-tone mapping and gamma correction, so values are close to sRGB. Use alpha for
-translucent panels:
+| Method | Effect |
+|--------|--------|
+| `Layout::row()` / `Layout::column()` | Flow direction |
+| `.padding(px)` / `.padding_edges(edges)` | Inner spacing |
+| `.margin(px)` | Outer spacing |
+| `.gap(px)` | Space between children |
+| `.width(px)` / `.height(px)` / `.size(w, h)` | Fixed size |
+| `.fill_width()` / `.fill_height()` / `.fill()` | Fill available space |
+| `.grow(weight)` | Share of leftover space for fill children |
+| `.align_items(AlignItems)` | Start / Center / End / Stretch |
+| `.justify_content(JustifyContent)` | Start / Center / End / SpaceBetween |
+| `.absolute(Rect)` | Place relative to the parent content box |
+| `.scrollable()` | Vertical scrolling + clipping |
+| `.id(value)` | Explicit stable id instead of the auto id |
+
+Automatic ids are stable across frames and derived from the parent id, the
+child index and the widget kind. Explicit `.id("name")` is only needed when a
+widget moves between parents or must be addressed directly.
+
+A root widget with an explicit width and height is centered in the viewport.
+`.absolute(Rect)` places a widget relative to its parent, so wrap absolutely
+positioned panels in a full-screen container:
 
 ```rust
-ctx.ui.rect(16.0, 16.0, 280.0, 96.0, [0.05, 0.06, 0.08, 0.85]);
-ctx.ui.rect(16.0, 16.0, 4.0, 96.0, [0.2, 0.8, 0.4, 1.0]);
-ctx.ui.text("SOLDATIK3D", 32.0, 28.0, 1.4, [1.0; 4]);
+ui.begin_container(Layout::default().fill());
+ui.begin_styled_container(
+    Layout::column().absolute(Rect::new(20.0, 60.0, 320.0, 240.0)),
+    theme.window,
+    theme.panel_border,
+    theme.radius,
+);
+// ... panel content ...
+ui.end_container();
+ui.end_container();
 ```
 
-There are no rounded corners, gradients or borders. Compose them from
-rectangles.
+## Widgets
 
-## A simple HUD
+All widgets are methods on `Ui`. Every method has a `*_styled` or `*_with`
+variant for custom styles and layout overrides.
+
+### Text
 
 ```rust
-fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-    let (w, h) = ctx.viewport;
-    let w = w as f32;
-    let h = h as f32;
+ui.label("Simple label");
+ui.heading("Section title");
+ui.hint("Muted hint");
+ui.paragraph("Long text that wraps to the current viewport width.");
 
-    ctx.ui.rect(0.0, h - 36.0, w, 36.0, [0.0, 0.0, 0.0, 0.6]);
-    ctx.ui.text(
-        &format!("HP {:>3}   AMMO {:>2}", self.hp, self.ammo),
-        16.0,
-        h - 26.0,
-        1.2,
-        [1.0; 4],
-    );
-    ctx.ui.crosshair();
+let style = runtime::ui::LabelStyle::new(18.0)
+    .color([1.0, 0.9, 0.3, 1.0])
+    .align(runtime::ui::TextAlign::Center)
+    .wrap(240.0);
+ui.label_styled("Styled", style);
+```
 
-    if self.paused {
-        ctx.ui.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, 0.5]);
-        let label = "PAUSED";
-        let width = UiDrawList::text_width(label, 2.0);
-        ctx.ui.text(label, (w - width) * 0.5, h * 0.5 - 7.0, 2.0, [1.0; 4]);
+`measure_label(text, &style)` returns the pixel size without drawing.
+
+### Buttons
+
+```rust
+if ui.button("Play").clicked {
+    start_game();
+}
+if ui.button_primary("Continue").clicked { /* accent action */ }
+if ui.button_danger("Delete").clicked { /* destructive action */ }
+```
+
+`ButtonStyle::from_theme(&theme)` can be customized with `.height(px)`,
+`.font_size(px)` and `.padding(px)`.
+
+### Toggle, slider, progress
+
+```rust
+ui.toggle("VSync", &mut self.vsync);
+ui.slider("Volume", &mut self.volume, 0.0, 1.0);
+ui.progress(self.loaded / self.total, 1.0);
+ui.progress_labeled("Loading 42%", 0.42, 1.0);
+```
+
+Sliders use `Response::changed` and are dragged with the pointer that started
+the interaction, including on touch screens.
+
+### Dropdown
+
+```rust
+let items = ["LIT", "NORMALS", "DEPTH"];
+let response = ui.dropdown("", &items, &mut self.selected);
+if response.changed {
+    self.view = items[self.selected];
+}
+```
+
+The popup is rendered after the regular tree, above all widgets, and blocks
+input to widgets underneath it.
+
+### Panels, scroll panels and spacing
+
+```rust
+ui.panel(Layout::column().padding(12.0), |ui| {
+    ui.label("Card content");
+});
+
+let panel = Layout::column().height(220.0).scrollable().padding(8.0);
+let response = ui.scroll_panel(panel, |ui| {
+    for row in &self.rows {
+        ui.label(row);
     }
-}
+});
+
+ui.spacer(0.0, 12.0);
+ui.separator();
+ui.flexible_space();
 ```
 
-## Buttons and hit testing
+Scroll panels handle the mouse wheel, touch scrolling and a draggable
+scrollbar. `scroll_info(id)` exposes `(offset, max_offset)` for custom UI.
 
-The engine has no widget layer. A button is a rectangle plus a cursor test:
+## Touch controls
+
+### Virtual joystick
 
 ```rust
-fn button(ui: &mut UiDrawList, input: &Input, label: &str, x: f32, y: f32) -> bool {
-    let width = 120.0;
-    let height = 32.0;
-    let cursor = input.cursor_position();
-    let hovered = cursor.x >= x
-        && cursor.x <= x + width
-        && cursor.y >= y
-        && cursor.y <= y + height;
-    let color = if hovered {
-        [0.2, 0.45, 0.8, 1.0]
-    } else {
-        [0.15, 0.2, 0.3, 1.0]
-    };
-    ui.rect(x, y, width, height, color);
-    ui.text(label, x + 10.0, y + 10.0, 1.0, [1.0; 4]);
-    hovered && input.primary_clicked()
-}
+use runtime::ui::{JoystickState, JoystickStyle};
+
+// Field in the game struct; state survives between frames.
+joystick: JoystickState,
+
+let style = JoystickStyle::from_theme(ui.theme());
+let axes = ui.virtual_joystick(&mut self.joystick, &style);
+// axes.x: right, axes.y: down in screen space (deadzoned and normalized).
+// JoystickState::axes() returns (strafe, forward) with forward positive.
 ```
 
-Works only while the cursor is released; captured cursor motion produces zero
-`cursor_position` changes on some platforms.
+The joystick area defaults to the **left half** of the screen. Its base follows
+the finger that started the gesture instead of staying at a fixed position,
+which is much more comfortable on phones. `JoystickStyle::area` restricts the
+gesture area and `handle_radius` / `radius` change the visuals.
+
+The joystick and touch camera are background gestures: call them **after** the
+HUD widgets, so a button placed in the same screen half gets the first chance
+to claim the pointer.
+
+### Touch camera
+
+```rust
+use runtime::ui::TouchCameraState;
+
+camera: TouchCameraState,
+
+let style = runtime::ui::TouchCameraStyle::from_theme(ui.theme());
+let delta = ui.touch_camera(&mut self.camera, &style);
+self.player.add_yaw(delta.x);
+self.player.add_pitch(-delta.y);
+```
+
+The camera area defaults to the **right half** of the screen and only consumes
+touch pointers. Mouse look on desktop stays on the platform's captured cursor.
+
+## Pointer capture
+
+The UI marks the widget that owns the current pointer. `ui.captures_pointer()`
+returns `true` while a widget or a scrollbar is being dragged; games use it to
+skip camera look or world clicks. Dropdown popups, joystick and touch camera
+claim their pointers too, so a finger never drives two controls at once.
+
+## Styling
+
+`Theme` owns all colors and control metrics:
+
+```rust
+let theme = runtime::ui::Theme::dark().scaled(display_scale);
+ui.set_theme(theme);
+
+let accent = ui.theme().accent;
+let control_height = ui.theme().control_height;
+```
+
+`Theme::dark()`, `Theme::light()`, `.with_font_size(px)` and `.scaled(scale)`
+cover the common cases. `ButtonStyle`, `DropdownStyle`, `SliderStyle`,
+`ToggleStyle`, `ProgressStyle`, `ScrollPanelStyle`, `LabelStyle`,
+`JoystickStyle` and `TouchCameraStyle` override individual widgets.
+
+## Low-level drawing
+
+For HUD overlays and debug tools, `Ui` forwards the draw list:
+
+```rust
+ui.rect(x, y, w, h, color);
+ui.rect_rounded(x, y, w, h, radius, color);
+ui.rect_outline(rect, 1.0, color);
+ui.line_h(x, y, width, thickness, color);
+ui.circle(center, radius, color);
+ui.circle_outline(center, radius, thickness, color);
+ui.text("TEXT", x, y, 18.0, color);
+ui.crosshair();
+ui.set_clip(rect);
+ui.reset_clip();
+```
+
+Text uses `runtime::ui::TextStyle`:
+
+```rust
+let style = runtime::ui::TextStyle::new(18.0)
+    .with_color([1.0; 4])
+    .align(runtime::ui::TextAlign::Center)
+    .wrap(300.0);
+ui.text_styled("Centered", &style, runtime::glam::Vec2::new(20.0, 20.0));
+```
+
+Raw calls made during `Game::update` are emitted before the retained tree.
+The console is drawn after `Ui::end_frame` by the runtime, so it stays on top
+of game HUDs.
+
+## Text engine
+
+The `text` crate is a dependency-free TTF engine:
+
+- SFNT/TTF parsing, `cmap`, `glyf`, `kern`,
+- anti-aliased rasterization at the requested pixel size,
+- dynamic R8 atlas with shelf packing and dirty-rectangle tracking,
+- layout with alignment and wrapping,
+- embedded Open Sans Regular/Bold; external fonts can be loaded at runtime.
+
+A new font atlas is uploaded only when new glyphs were rasterized. The atlas
+starts at 512×512 and grows up to 2048×4096.
 
 ## Console
 
-The developer console is drawn by the engine into the same `UiDrawList`, after
-the game. While it is open, `ctx.console_open` is true and the cursor is
-released. The console supports:
+The developer console is drawn by the runtime into the same `Ui` after the
+game. While it is open, `ctx.console_open` is `true` and the cursor is released.
+It supports:
 
 - command history with `↑` / `↓`,
 - tab completion of command names,

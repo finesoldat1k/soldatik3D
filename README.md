@@ -10,7 +10,7 @@
 
 **soldatik3D** — a modular 3D game engine in Rust with two production-ready graphics backends: **Vulkan 1.2** and **OpenGL 3.3 core / ES 3.0**. The repository contains the engine and a demonstration game that uses only the public `runtime` API, completely agnostic to the underlying graphics API.
 
-The engine is built from focused crates with single responsibilities: assets, scene & cameras, UI, renderer abstraction, platform abstraction, two graphics backends, and a runtime facade. The demo lives outside `crates/`, keeping `crates/` as pure engine code.
+The engine is built from focused crates with single responsibilities: assets, scene & cameras, a dependency-free TrueType text engine, a hybrid immediate-mode UI, renderer abstraction, platform abstraction, two graphics backends, and a runtime facade. The demo lives outside `crates/`, keeping `crates/` as pure engine code.
 
 <div align="center">
   <table>
@@ -46,7 +46,7 @@ The engine is built from focused crates with single responsibilities: assets, sc
 - **Frustum Culling** — Camera and light frustum culling for optimal draw calls.
 - **Cameras as Engine Citizens** — `World` and `CameraRig` allow spawning named cameras, selecting active, cycling next/prev, and removing them. Runtime always renders through the active camera.
 - **Built-In Developer Console** — Command registry, Tab completion, input history, hints, and extensible with game commands. Opens with `F1` or `` ` ``.
-- **Immediate-Mode UI** — `UiDrawList` with rectangles, built-in bitmap text and a crosshair; the demo builds its panels and buttons on top of it.
+- **Hybrid Immediate-Mode UI** — `Ui` widgets called every frame over a retained arena tree: flexbox-style layout, buttons, labels, toggles, sliders, dropdowns, progress bars, scroll panels, touch-friendly joystick and touch camera. Embedded **Open Sans** (Latin + Cyrillic) rendered by the engine's own dependency-free TrueType rasterizer.
 - **Screenshots & Diagnostics** — `F12` or `screenshot` command saves current frame as PNG; `SOLDATIK3D_VALIDATION=1` enables Vulkan validation layers.
 - **Cross-Platform Window & Input** — Via `winit`, isolated in `platform` crate; backends receive only raw handles and surface size.
 - **Demo Game** — Procedural level, 7 cameras, lighting, collisions, FPS controller, debug views.
@@ -64,9 +64,10 @@ soldatik3D/
 │       ├── ci.yml        # Linux + Windows + Android on every push/PR
 │       └── release.yml   # Release builds + APK packaging
 ├── crates/
-│   ├── assets/           # Textures, bitmap font, environment cubemap
+│   ├── assets/           # Textures, legacy bitmap font, environment cubemap
 │   ├── scene/            # Camera, CameraRig, World, Mesh, Material, Light, Scene
-│   ├── ui/               # UiDrawList and UiVertex for immediate-mode UI
+│   ├── text/             # Dependency-free TTF parser, rasterizer, glyph atlas, layout
+│   ├── ui/               # Hybrid immediate-mode Ui, widgets, layout, draw list
 │   ├── render/           # Renderer, BackendKind, FrameData, WindowSurface
 │   ├── platform/         # winit: window, input, raw handles, TargetOS
 │   ├── vulkan/           # Vulkan backend, pipelines, GLSL shaders
@@ -90,7 +91,7 @@ Dependency graph:
 ```text
 examples/demo ──► runtime ──► scene ──► assets
                      │           ▲
-                     ├─► ui ─────┤
+                     ├─► ui ──► text
                      ├─► render  │
                      ├─► platform│
                      ├─► vulkan ─┘ (optional feature)
@@ -277,7 +278,8 @@ pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp
 | `Material` / `TextureData` | Albedo texture, metallic, roughness (one material per scene) |
 | `Light` / `PrimaryLight` | Up to 8 nearest local point lights; one directional shadow-casting light |
 | `Input` / `InputMap` | Keyboard and mouse state plus named action bindings |
-| `UiDrawList` | Immediate-mode rectangles, bitmap text and crosshair in physical pixels |
+| `Ui` | Hybrid immediate-mode widgets, flex layout, theming, raw text/rectangles, crosshair |
+| `TextSystem` | TTF parsing, rasterization, layout and the dynamic R8 glyph atlas (`text` crate) |
 | `CommandContext` | Game-defined console command name, arguments and world access |
 | `BackendKind` / `VsyncMode` / `DebugView` | Backend selection, swapchain pacing, debug visualization |
 | `RenderStats` | Vertices, triangles and draw calls of the previous frame |

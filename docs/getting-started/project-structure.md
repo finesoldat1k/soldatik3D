@@ -8,7 +8,7 @@ dependency direction is acyclic:
 ```text
 examples/demo ──► runtime ──► scene ──► assets
                      │           ▲
-                     ├─► ui ─────┤
+                     ├─► ui ──► text
                      ├─► render  │
                      ├─► platform│
                      ├─► vulkan ─┘   (optional feature)
@@ -17,9 +17,10 @@ examples/demo ──► runtime ──► scene ──► assets
 
 | Path | Package | Responsibility |
 |------|---------|----------------|
-| `crates/assets` | `assets` | `TextureData`, bitmap font atlas, environment cubemap |
+| `crates/assets` | `assets` | `TextureData`, legacy bitmap font atlas, environment cubemap |
+| `crates/text` | `text` | Dependency-free TTF parsing, rasterization, layout and R8 glyph atlas |
 | `crates/scene` | `scene` | `World`, `Scene`, `Camera`, `CameraRig`, `Mesh`, lights, material |
-| `crates/ui` | `ui` | `UiDrawList`, `UiVertex`, rectangles and bitmap text |
+| `crates/ui` | `ui` | Hybrid immediate-mode `Ui`, widgets, layout, theming, draw list |
 | `crates/render` | `render` | Backend-neutral `Renderer` trait, `BackendKind`, `FrameData`, `VsyncMode` |
 | `crates/platform` | `platform` | `winit` window, input snapshot, raw surface handles, platform detection |
 | `crates/vulkan` | `vulkan` | Vulkan 1.2 backend, pipelines and GLSL shaders |

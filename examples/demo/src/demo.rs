@@ -1,15 +1,17 @@
 //! Demo game implementation of the engine `Game` trait.
 
 use runtime::glam::{Vec2, Vec3};
+use runtime::ui::{
+    ButtonStyle, DropdownStyle, JoystickState, JoystickStyle, LabelStyle, Layout, Rect,
+    TouchCameraState, TouchCameraStyle, Ui,
+};
 use runtime::{
-    Aabb, CameraRig, CommandContext, DebugView, Game, GameConfig, InputMap, UpdateContext,
-    VsyncMode, World,
+    Aabb, CameraRig, CommandContext, DebugView, Game, GameConfig, InputMap, UpdateContext, World,
 };
 
 use crate::debug_ui::DebugMenu;
 use crate::player::{Player, default_input_map};
 use crate::world;
-use ui::{Interaction, Rect, Theme, UiContext, WidgetId, widget_id};
 
 const GAME_COMMANDS: &[(&str, &str)] = &[
     ("debug.lit", "switch the forward pass to the lit view"),
@@ -30,17 +32,12 @@ pub struct DemoGame {
     player: Player,
     colliders: Vec<Aabb>,
     menu: DebugMenu,
-    // New UI system state
-    ui_context: Option<UiContext>,
     settings_open: bool,
     vsync_enabled: bool,
     debug_view_items: Vec<&'static str>,
     debug_view_selected: usize,
-    joystick_id: WidgetId,
-    camera_id: WidgetId,
-    settings_button_id: WidgetId,
-    dropdown_id: WidgetId,
-    vsync_toggle_id: WidgetId,
+    joystick: JoystickState,
+    touch_camera: TouchCameraState,
     fps: f32,
     frame_ms: f32,
     fps_accumulator: f32,
@@ -54,16 +51,12 @@ impl DemoGame {
             player: Player::new(),
             colliders: Vec::new(),
             menu: DebugMenu::new(),
-            ui_context: None,
             settings_open: false,
             vsync_enabled: true,
             debug_view_items: vec!["LIT", "NORMALS", "DEPTH"],
             debug_view_selected: 0,
-            joystick_id: widget_id("joystick"),
-            camera_id: widget_id("camera"),
-            settings_button_id: widget_id("settings_button"),
-            dropdown_id: widget_id("debug_dropdown"),
-            vsync_toggle_id: widget_id("vsync_toggle"),
+            joystick: JoystickState::default(),
+            touch_camera: TouchCameraState::default(),
             fps: 0.0,
             frame_ms: 0.0,
             fps_accumulator: 0.0,
@@ -214,77 +207,85 @@ impl Game for DemoGame {
     }
 
     fn update(&mut self, ctx: &mut UpdateContext<'_>) {
-        // Initialize UI context on first frame
-        if self.ui_context.is_none() {
-            let theme = Theme::dark();
-            let ui_draw = ui::UiDrawList::new(ctx.viewport.0, ctx.viewport.1);
-            self.ui_context = Some(UiContext::new(ui_draw, theme));
-        }
-
-        // Update UI context with input
-        if let Some(ui_ctx) = &mut self.ui_context {
-            ui_ctx.update_pointers(ctx.input);
-            ui_ctx.draw.resize(ctx.viewport.0, ctx.viewport.1);
-        }
-
         let screen_w = ctx.viewport.0 as f32;
         let screen_h = ctx.viewport.1 as f32;
-        let is_mobile = cfg!(target_os = "android");
+        let is_mobile = ctx.input.touch_mode() || cfg!(target_os = "android");
+        self.menu.open = !ctx.input.cursor_captured() && !ctx.console_open;
 
         let player_active = self
             .player_camera
             .is_some_and(|id| ctx.world.active_camera_id() == Some(id));
 
-        // Handle mobile touch controls
         let mut move_input = Vec3::ZERO;
         let mut camera_delta = Vec2::ZERO;
         let mut jump_pressed = false;
         let mut fly_toggle = false;
 
-        if let Some(ui_ctx) = &mut self.ui_context {
-            if is_mobile && player_active && !ctx.console_open {
-                // Virtual joystick on left side
-                let joy_area = Rect::new(0.0, screen_h * 0.3, screen_w * 0.5, screen_h * 0.7);
-                let (stick_output, _interaction) =
-                    ui_ctx.virtual_joystick(self.joystick_id, joy_area, 0.15);
-                move_input = Vec3::new(stick_output.x, 0.0, stick_output.y);
+        // HUD layer: full-screen transparent container with absolutely placed
+        // touch controls and the settings button.
+        let touch_controls = is_mobile && player_active && !ctx.console_open && !self.settings_open;
+        ctx.ui.begin_container(Layout::default().fill());
+        if touch_controls {
+            let joystick_style = JoystickStyle::from_theme(ctx.ui.theme());
+            let axes = ctx.ui.virtual_joystick(&mut self.joystick, &joystick_style);
+            move_input = Vec3::new(axes.x, 0.0, -axes.y);
 
-                // Touch camera on right side
-                let cam_area = Rect::new(screen_w * 0.5, 0.0, screen_w * 0.5, screen_h);
-                camera_delta = ui_ctx.touch_camera(self.camera_id, cam_area);
+            let button_style = ButtonStyle::from_theme(ctx.ui.theme())
+                .height(84.0)
+                .font_size(18.0);
+            let jump = ctx.ui.button_with(
+                Layout::default().absolute(Rect::new(
+                    screen_w - 108.0,
+                    screen_h - 108.0,
+                    84.0,
+                    84.0,
+                )),
+                "JUMP",
+                button_style.clone(),
+            );
+            jump_pressed = jump.clicked;
 
-                // Jump button (bottom right area)
-                let jump_rect = Rect::new(screen_w - 100.0, screen_h - 100.0, 80.0, 80.0);
-                if ui_ctx.button(self.joystick_id, jump_rect, "JUMP", 1.2) == Interaction::Clicked {
-                    jump_pressed = true;
-                }
+            let fly = ctx.ui.button_with(
+                Layout::default().absolute(Rect::new(
+                    screen_w - 108.0,
+                    screen_h - 204.0,
+                    84.0,
+                    84.0,
+                )),
+                "FLY",
+                button_style,
+            );
+            fly_toggle = fly.clicked;
+        }
 
-                // Fly toggle button (above jump)
-                let fly_rect = Rect::new(screen_w - 100.0, screen_h - 200.0, 80.0, 80.0);
-                if ui_ctx.button(self.vsync_toggle_id, fly_rect, "FLY", 1.2) == Interaction::Clicked
-                {
-                    fly_toggle = true;
-                }
-
-                // Settings button (top right)
-                let settings_rect = Rect::new(screen_w - 60.0, 20.0, 40.0, 40.0);
-                if ui_ctx.button(self.settings_button_id, settings_rect, "⚙", 1.5)
-                    == Interaction::Clicked
-                {
-                    self.settings_open = !self.settings_open;
-                }
-            }
-
-            // Apply camera delta from touch
-            if camera_delta.length_squared() > 0.0 {
-                self.player.add_yaw(camera_delta.x);
-                self.player.add_pitch(-camera_delta.y);
+        if is_mobile || self.menu.open {
+            let style = ButtonStyle::from_theme(ctx.ui.theme())
+                .height(44.0)
+                .font_size(20.0);
+            let settings = ctx.ui.button_with(
+                Layout::default().absolute(Rect::new(screen_w - 60.0, 16.0, 44.0, 44.0)),
+                "SET",
+                style,
+            );
+            if settings.clicked {
+                self.settings_open = !self.settings_open;
             }
         }
 
+        // The camera is a background gesture for the right half. Call it after
+        // the HUD widgets so buttons get the first chance to claim a tap.
+        if touch_controls {
+            let camera_style = TouchCameraStyle::from_theme(ctx.ui.theme());
+            camera_delta = ctx.ui.touch_camera(&mut self.touch_camera, &camera_style);
+        }
+        ctx.ui.end_container();
+
+        if camera_delta.length_squared() > 0.0 {
+            self.player.add_yaw(camera_delta.x);
+            self.player.add_pitch(-camera_delta.y);
+        }
+
         if player_active && (ctx.input.cursor_captured() || is_mobile) && !ctx.console_open {
-            // For mobile, we need to inject the virtual joystick input
-            // The player update will check for virtual controls via the ui_context
             self.player.update_with_virtual_mobile(
                 ctx.dt,
                 ctx.input,
@@ -307,7 +308,6 @@ impl Game for DemoGame {
             self.fps_frames = 0;
         }
 
-        self.menu.open = !ctx.input.cursor_captured() && !ctx.console_open;
         self.menu.draw(
             ctx.ui,
             ctx.input,
@@ -319,117 +319,70 @@ impl Game for DemoGame {
             ctx.console_open,
         );
 
-        // Draw new UI system
-        if let Some(mut ui_ctx) = self.ui_context.take() {
-            Self::draw_ui_static(&mut ui_ctx, self, ctx, screen_w, screen_h, is_mobile);
-            self.ui_context = Some(ui_ctx);
+        if self.settings_open {
+            self.draw_settings(ctx.ui, screen_w);
         }
     }
 }
 
 impl DemoGame {
-    fn draw_ui_static(
-        ui_ctx: &mut UiContext,
-        game: &mut DemoGame,
-        ctx: &mut UpdateContext<'_>,
-        screen_w: f32,
-        screen_h: f32,
-        is_mobile: bool,
-    ) {
-        // Settings button (always visible on mobile, or when menu is open on desktop)
-        if is_mobile || game.menu.open {
-            let settings_rect = Rect::new(screen_w - 60.0, 20.0, 40.0, 40.0);
-            if ui_ctx.button(game.settings_button_id, settings_rect, "⚙", 1.5)
-                == Interaction::Clicked
-            {
-                game.settings_open = !game.settings_open;
-            }
+    fn draw_settings(&mut self, ui: &mut Ui, screen_w: f32) {
+        let panel_w = 300.0;
+        let panel_h = 250.0;
+        let panel_rect = Rect::new(screen_w - panel_w - 12.0, 70.0, panel_w, panel_h);
+        let settings_rect = Rect::new(screen_w - 60.0, 16.0, 44.0, 44.0);
+        let outside_click = ui.input().pointers.iter().any(|pointer| {
+            pointer.pressed
+                && !panel_rect.contains(pointer.position)
+                && !settings_rect.contains(pointer.position)
+        });
+
+        let background = ui.theme().window;
+        let border = ui.theme().panel_border;
+        let radius = ui.theme().radius;
+        // Full-screen wrapper so the panel can be placed at an absolute
+        // position instead of being centered as a root node.
+        ui.begin_container(Layout::default().fill());
+        ui.begin_styled_container(
+            Layout::column().absolute(panel_rect).padding(14.0).gap(8.0),
+            background,
+            border,
+            radius,
+        );
+
+        ui.heading("SETTINGS");
+        ui.hint("DEBUG VIEW");
+        let items: Vec<&str> = self.debug_view_items.clone();
+        let style = DropdownStyle::from_theme(ui.theme());
+        let response = ui.dropdown_with(
+            Layout::default().fill_width(),
+            "",
+            &items,
+            &mut self.debug_view_selected,
+            style,
+        );
+        if response.changed {
+            self.menu.view = match self.debug_view_selected {
+                0 => DebugView::Lit,
+                1 => DebugView::Normals,
+                2 => DebugView::Depth,
+                _ => DebugView::Lit,
+            };
         }
 
-        // Settings dropdown panel
-        if game.settings_open {
-            let panel_w = 280.0;
-            let panel_h = 220.0;
-            let panel_x = screen_w - panel_w - 10.0;
-            let panel_y = 70.0;
+        ui.toggle("VSYNC", &mut self.vsync_enabled);
 
-            // Panel background with shadow
-            ui_ctx.panel(Rect::new(panel_x, panel_y, panel_w, panel_h));
+        let stats_text = format!("FPS: {:.1}\nFrame: {:.2} ms", self.fps, self.frame_ms);
+        let stats_style = LabelStyle::new(14.0)
+            .color(ui.theme().text_muted)
+            .wrap(panel_w - 28.0);
+        ui.label_styled(stats_text, stats_style);
 
-            // Title
-            let title_rect = Rect::new(panel_x + 10.0, panel_y + 10.0, panel_w - 20.0, 30.0);
-            ui_ctx.label(title_rect, "SETTINGS", 1.5, None);
+        ui.end_container();
+        ui.end_container();
 
-            // Debug view dropdown
-            let dropdown_rect = Rect::new(panel_x + 10.0, panel_y + 50.0, panel_w - 20.0, 35.0);
-            let items: Vec<&str> = game.debug_view_items.iter().map(|s| *s).collect();
-            if ui_ctx.dropdown(
-                game.dropdown_id,
-                dropdown_rect,
-                "DEBUG VIEW",
-                &items,
-                &mut game.debug_view_selected,
-                1.2,
-            ) == Interaction::Changed
-            {
-                game.menu.view = match game.debug_view_selected {
-                    0 => DebugView::Lit,
-                    1 => DebugView::Normals,
-                    2 => DebugView::Depth,
-                    _ => DebugView::Lit,
-                };
-            }
-
-            // VSync toggle
-            let vsync_rect = Rect::new(panel_x + 10.0, panel_y + 100.0, panel_w - 20.0, 35.0);
-            if ui_ctx.toggle(
-                game.vsync_toggle_id,
-                vsync_rect,
-                "VSYNC",
-                1.2,
-                &mut game.vsync_enabled,
-            ) == Interaction::Changed
-            {
-                // VSync change will be applied on next frame via GameConfig
-                // For now, just store the preference
-            }
-
-            // Performance stats
-            let stats_rect = Rect::new(panel_x + 10.0, panel_y + 150.0, panel_w - 20.0, 50.0);
-            let stats_text = format!("FPS: {:.1}\nFrame: {:.2} ms", game.fps, game.frame_ms);
-            ui_ctx.label(stats_rect, &stats_text, 1.1, Some(ui_ctx.theme.text));
-
-            // Close on click outside
-            if let Some(pointer) = ui_ctx.primary_pointer() {
-                let panel_rect = Rect::new(panel_x, panel_y, panel_w, panel_h);
-                let settings_rect = Rect::new(screen_w - 60.0, 20.0, 40.0, 40.0);
-                if pointer.just_pressed
-                    && !panel_rect.contains(pointer.position)
-                    && !settings_rect.contains(pointer.position)
-                {
-                    game.settings_open = false;
-                }
-            }
-        }
-
-        // Mobile-only controls
-        if is_mobile {
-            // Virtual joystick area (left side)
-            let joy_area = Rect::new(0.0, screen_h * 0.3, screen_w * 0.5, screen_h * 0.7);
-            let (stick_output, _interaction) =
-                ui_ctx.virtual_joystick(game.joystick_id, joy_area, 0.15);
-
-            // Touch camera area (right side)
-            let cam_area = Rect::new(screen_w * 0.5, 0.0, screen_w * 0.5, screen_h);
-            let _camera_delta = ui_ctx.touch_camera(game.camera_id, cam_area);
-
-            // Jump button
-            let jump_rect = Rect::new(screen_w - 100.0, screen_h - 100.0, 80.0, 80.0);
-            ui_ctx.button(game.joystick_id, jump_rect, "JUMP", 1.2);
-
-            // Fly toggle button
-            let fly_rect = Rect::new(screen_w - 100.0, screen_h - 200.0, 80.0, 80.0);
-            ui_ctx.button(game.vsync_toggle_id, fly_rect, "FLY", 1.2);
+        if outside_click {
+            self.settings_open = false;
         }
     }
 }

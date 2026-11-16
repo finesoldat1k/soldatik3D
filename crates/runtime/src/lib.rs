@@ -44,7 +44,8 @@ pub use render::{
 pub use scene::glam;
 pub use scene::prelude::*;
 pub use scene::{Camera, CameraId, CameraRig, NamedCamera, Scene, World};
-pub use ui::{UiDrawList, UiVertex};
+pub use ui;
+pub use ui::{Ui, UiDrawList, UiVertex};
 
 use anyhow::Result;
 

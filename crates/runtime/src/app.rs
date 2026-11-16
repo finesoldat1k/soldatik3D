@@ -12,7 +12,7 @@ use platform::{Input, PlatformWindow};
 use render::{CameraFrame, FrameData, Renderer};
 use scene::glam::Vec3;
 use scene::{CameraId, World};
-use ui::UiDrawList;
+use ui::Ui;
 
 use crate::backend;
 use crate::commands::{BuiltinCommandContext, CommandRegistry};
@@ -31,7 +31,7 @@ pub(crate) struct App<G: Game> {
 
     input: Input,
     console: Console,
-    ui: Option<UiDrawList>,
+    ui: Ui,
     last_frame: Instant,
     consecutive_render_errors: u32,
     frame_budget: Option<u64>,
@@ -54,7 +54,7 @@ impl<G: Game> App<G> {
             world: None,
             input: Input::default(),
             console: Console::new(),
-            ui: None,
+            ui: Ui::new(),
             last_frame: Instant::now(),
             consecutive_render_errors: 0,
             frame_budget: std::env::var("SOLDATIK3D_MAX_FRAMES")
@@ -231,11 +231,10 @@ impl<G: Game> App<G> {
             return;
         }
 
-        let ui = self
-            .ui
-            .get_or_insert_with(|| UiDrawList::new(width, height));
-        ui.resize(width, height);
-        ui.clear();
+        self.ui.begin_frame(
+            &self.input,
+            scene::glam::Vec2::new(width as f32, height as f32),
+        );
 
         let stats = self
             .renderer
@@ -245,18 +244,22 @@ impl<G: Game> App<G> {
         let Some(world) = self.world.as_mut() else {
             return;
         };
-        let mut ctx = UpdateContext {
-            dt,
-            input: &self.input,
-            ui,
-            stats,
-            viewport: (width, height),
-            world,
-            console_open: self.console.is_open(),
-        };
-        self.game.update(&mut ctx);
-
-        self.console.draw(ui);
+        {
+            let mut ctx = UpdateContext {
+                dt,
+                input: &self.input,
+                ui: &mut self.ui,
+                stats,
+                viewport: (width, height),
+                world,
+                console_open: self.console.is_open(),
+            };
+            self.game.update(&mut ctx);
+        }
+        self.ui.end_frame();
+        // The console is raw immediate drawing; appending it after the tree
+        // keeps it on top of game HUDs.
+        self.console.draw(&mut self.ui);
 
         let camera = world.active_camera();
         let camera_frame = CameraFrame {
@@ -264,9 +267,34 @@ impl<G: Game> App<G> {
             projection: camera.projection_matrix(width as f32 / height as f32),
             position: camera.position,
         };
+
+        let atlas = self.ui.draw().atlas_update();
+        let dirty: Vec<render::UiAtlasRect> = atlas
+            .as_ref()
+            .map(|update| {
+                update
+                    .dirty
+                    .iter()
+                    .map(|rect| render::UiAtlasRect {
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ui_atlas = atlas.as_ref().map(|update| render::UiAtlasFrame {
+            width: update.width,
+            height: update.height,
+            pixels: self.ui.draw().atlas_pixels(),
+            full: update.full,
+            dirty: &dirty,
+        });
         let frame = FrameData {
             camera: camera_frame,
-            ui_vertices: ui.vertices(),
+            ui_vertices: self.ui.draw().vertices(),
+            ui_atlas,
             debug_view: self.game.debug_view(),
         };
         let Some(renderer) = self.renderer.as_mut() else {
@@ -282,6 +310,7 @@ impl<G: Game> App<G> {
             }
         } else {
             self.consecutive_render_errors = 0;
+            self.ui.draw_mut().mark_atlas_uploaded();
         }
 
         self.input.begin_frame();
@@ -429,8 +458,8 @@ impl<G: Game> ApplicationHandler for App<G> {
                 ));
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left && state == ElementState::Pressed {
-                    self.input.set_primary_clicked(true);
+                if button == MouseButton::Left {
+                    self.input.set_primary_down(state == ElementState::Pressed);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {

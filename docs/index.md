@@ -34,8 +34,8 @@ it every frame.
 | [Scene](api/scene.md) | `World`, `Camera`, `CameraRig`, `Scene`, `Mesh`, lights, material |
 | [Rendering](api/rendering.md) | `BackendKind`, `VsyncMode`, `DebugView`, `RenderStats`, `Renderer` |
 | [Input](api/input.md) | `Input`, `InputMap`, keyboard, mouse, actions |
-| [UI and console](api/ui.md) | `UiDrawList`, text, rectangles, console commands |
-| [Assets](api/assets.md) | `TextureData`, font atlas, environment cubemap |
+| [UI and console](api/ui.md) | `Ui`, widgets, layout, fonts, touch controls, console |
+| [Assets](api/assets.md) | `TextureData`, legacy font atlas, environment cubemap |
 | [Platform](api/platform.md) | `TargetOS`, `TargetArch`, capabilities, `winit` re-export |
 
 ## Reference
