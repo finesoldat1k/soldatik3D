@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use ash::{Device, vk};
-use assets::generate_environment_cubemap;
+use assets::{
+    ENVIRONMENT_SIZE, IRRADIANCE_SIZE, PREFILTERED_MIP_LEVELS, PREFILTERED_SIZE,
+    generate_environment_cubemap_with_sun, generate_irradiance_cubemap,
+    generate_prefiltered_cubemap,
+};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
 use render::{
@@ -272,6 +276,8 @@ pub struct VulkanRenderer {
     context: VulkanContext,
     vsync: VsyncMode,
     capture_requested: bool,
+    /// Static geometry is rendered into the shadow map once at startup.
+    shadow_ready: bool,
 }
 
 impl VulkanRenderer {
@@ -337,11 +343,25 @@ impl VulkanRenderer {
             vk::BufferUsageFlags::UNIFORM_BUFFER,
         )?;
 
-        let irradiance_pixels = generate_environment_cubemap(128);
+        let sun_direction =
+            (scene.primary_light.position - scene.primary_light.target).normalize_or_zero();
+        let environment = generate_environment_cubemap_with_sun(ENVIRONMENT_SIZE, sun_direction);
+        let irradiance_pixels =
+            generate_irradiance_cubemap(&environment, ENVIRONMENT_SIZE, IRRADIANCE_SIZE);
+        let prefiltered_pixels = generate_prefiltered_cubemap(
+            &environment,
+            ENVIRONMENT_SIZE,
+            PREFILTERED_SIZE,
+            PREFILTERED_MIP_LEVELS,
+        );
         let ibl_irradiance =
-            GpuImage::cubemap_rgba32f(&context, &uploader, 128, &irradiance_pixels)?;
-        let ibl_prefiltered =
-            GpuImage::cubemap_rgba32f(&context, &uploader, 128, &irradiance_pixels)?;
+            GpuImage::cubemap_rgba32f(&context, &uploader, IRRADIANCE_SIZE, &irradiance_pixels)?;
+        let ibl_prefiltered = GpuImage::cubemap_rgba32f_levels(
+            &context,
+            &uploader,
+            PREFILTERED_SIZE,
+            &prefiltered_pixels,
+        )?;
 
         // The UI owns the glyph atlas and uploads it when new glyphs appear.
         // A 1x1 white texture keeps the descriptor set valid before the first
@@ -633,6 +653,7 @@ impl VulkanRenderer {
             context,
             vsync,
             capture_requested: false,
+            shadow_ready: false,
         })
     }
 
@@ -678,17 +699,20 @@ impl VulkanRenderer {
         let command_buffer = self.command_buffers[frame_index];
 
         self.upload_per_frame_data(frame, frame_index)?;
-        self.record_shadow_pass(frame_index)?;
+        let mut command_buffers = Vec::with_capacity(2);
+        if !self.shadow_ready {
+            self.record_shadow_pass(frame_index)?;
+            self.shadow_ready = true;
+            command_buffers.push(self.shadow_command_buffers[frame_index]);
+        }
         self.record_main_pass(command_buffer, image_index, frame)?;
+        command_buffers.push(command_buffer);
 
-        let shadow_cmd = self.shadow_command_buffers[frame_index];
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.sync.render_finished[image_index as usize]];
-        // Shadow and main work are submitted together. A pipeline barrier at
-        // the end of the shadow command buffer orders the shadow-map writes
-        // before the forward pass samples them.
-        let command_buffers = [shadow_cmd, command_buffer];
+        // The first frame submits the baked shadow map before the forward
+        // pass. Later frames only sample the cached depth map.
         let submit = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
@@ -1109,7 +1133,7 @@ impl VulkanRenderer {
                 light.position.x,
                 light.position.y,
                 light.position.z,
-                10_000.0,
+                light.shadow.ortho_half_extent,
             ],
             light_color: [primary_color.x, primary_color.y, primary_color.z, 1.0],
             camera_position: [

@@ -17,6 +17,7 @@ pub struct GpuImage {
     pub format: vk::Format,
     pub extent: vk::Extent2D,
     pub layers: u32,
+    pub mip_levels: u32,
 }
 
 impl GpuImage {
@@ -153,18 +154,33 @@ impl GpuImage {
         size: u32,
         pixels: &[f32],
     ) -> Result<Self> {
-        ensure!(
-            pixels.len() == (size * size * 6 * 4) as usize,
-            "RGBA32F cubemap data has an invalid size"
-        );
+        Self::cubemap_rgba32f_levels(context, uploader, size, &[pixels.to_vec()])
+    }
+
+    /// Uploads a full cubemap mip chain. `levels[0]` is the base level and
+    /// each following level halves the face size (clamped to 1).
+    pub fn cubemap_rgba32f_levels(
+        context: &VulkanContext,
+        uploader: &ImmediateCommands,
+        base_size: u32,
+        levels: &[Vec<f32>],
+    ) -> Result<Self> {
+        ensure!(!levels.is_empty(), "cubemap needs at least one mip level");
+        for (mip, pixels) in levels.iter().enumerate() {
+            let size = (base_size >> mip).max(1);
+            ensure!(
+                pixels.len() == (size * size * 6 * 4) as usize,
+                "RGBA32F cubemap mip {mip} has an invalid size"
+            );
+        }
         let mut image = Self::allocate(
             context,
             vk::Extent2D {
-                width: size,
-                height: size,
+                width: base_size,
+                height: base_size,
             },
             6,
-            1,
+            levels.len() as u32,
             vk::Format::R32G32B32A32_SFLOAT,
             vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
             vk::ImageViewType::CUBE,
@@ -174,7 +190,7 @@ impl GpuImage {
             vk::BorderColor::FLOAT_OPAQUE_BLACK,
             vk::ImageCreateFlags::CUBE_COMPATIBLE,
         )?;
-        image.upload_f32(context, uploader, pixels, 6)?;
+        image.upload_cubemap_levels(context, uploader, levels)?;
         Ok(image)
     }
 
@@ -262,7 +278,13 @@ impl GpuImage {
                 return Err(error);
             }
         };
-        let sampler = match create_sampler(&context.device, filter, address_mode, border_color) {
+        let sampler = match create_sampler(
+            &context.device,
+            filter,
+            address_mode,
+            border_color,
+            mip_levels,
+        ) {
             Ok(sampler) => sampler,
             Err(error) => {
                 unsafe {
@@ -283,6 +305,7 @@ impl GpuImage {
             format,
             extent,
             layers,
+            mip_levels,
         })
     }
 
@@ -342,47 +365,55 @@ impl GpuImage {
         self.transition_after_upload(context, uploader)
     }
 
-    fn upload_f32(
+    fn upload_cubemap_levels(
         &mut self,
         context: &VulkanContext,
         uploader: &ImmediateCommands,
-        pixels: &[f32],
-        layers: u32,
+        levels: &[Vec<f32>],
     ) -> Result<()> {
         self.transition_for_upload(context, uploader)?;
-        let size = std::mem::size_of_val(pixels) as u64;
+        let mut pixels = Vec::new();
+        let mut regions = Vec::with_capacity(levels.len());
+        let mut offset = 0u64;
+        for (mip, level) in levels.iter().enumerate() {
+            let size = (self.extent.width >> mip).max(1);
+            regions.push(
+                vk::BufferImageCopy::default()
+                    .buffer_offset(offset)
+                    .buffer_row_length(0)
+                    .buffer_image_height(0)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: mip as u32,
+                        base_array_layer: 0,
+                        layer_count: self.layers,
+                    })
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .image_extent(vk::Extent3D {
+                        width: size,
+                        height: size,
+                        depth: 1,
+                    }),
+            );
+            pixels.extend_from_slice(level);
+            offset += std::mem::size_of_val(level.as_slice()) as u64;
+        }
         let staging = GpuBuffer::host_visible(
             &context.device,
             &context.instance,
             context.physical_device,
-            size,
+            offset,
             vk::BufferUsageFlags::TRANSFER_SRC,
         )?;
-        staging.write_bytes(bytemuck::cast_slice(pixels))?;
+        staging.write_bytes(bytemuck::cast_slice(pixels.as_slice()))?;
         uploader.run(|command_buffer| {
-            let region = [vk::BufferImageCopy::default()
-                .buffer_offset(0)
-                .buffer_row_length(0)
-                .buffer_image_height(0)
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: layers,
-                })
-                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                .image_extent(vk::Extent3D {
-                    width: self.extent.width,
-                    height: self.extent.height,
-                    depth: 1,
-                })];
             unsafe {
                 context.device.cmd_copy_buffer_to_image(
                     command_buffer,
                     staging.handle,
                     self.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &region,
+                    &regions,
                 )
             };
             Ok(())
@@ -405,7 +436,7 @@ impl GpuImage {
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
-                    level_count: 1,
+                    level_count: self.mip_levels,
                     base_array_layer: 0,
                     layer_count: self.layers,
                 })
@@ -441,7 +472,7 @@ impl GpuImage {
                 .subresource_range(vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
-                    level_count: 1,
+                    level_count: self.mip_levels,
                     base_array_layer: 0,
                     layer_count: self.layers,
                 })
@@ -502,10 +533,19 @@ fn create_sampler(
     filter: vk::Filter,
     address_mode: vk::SamplerAddressMode,
     border_color: vk::BorderColor,
+    mip_levels: u32,
 ) -> Result<vk::Sampler> {
+    let mipmapped = mip_levels > 1;
     let info = vk::SamplerCreateInfo::default()
         .mag_filter(filter)
         .min_filter(filter)
+        .mipmap_mode(if mipmapped {
+            vk::SamplerMipmapMode::LINEAR
+        } else {
+            vk::SamplerMipmapMode::NEAREST
+        })
+        .min_lod(0.0)
+        .max_lod((mip_levels.saturating_sub(1)) as f32)
         .address_mode_u(address_mode)
         .address_mode_v(address_mode)
         .address_mode_w(address_mode)

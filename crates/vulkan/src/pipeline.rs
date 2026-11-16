@@ -49,6 +49,7 @@ pub fn world(
         attribute(2, 0, vk::Format::R32G32B32_SFLOAT, Vertex::NORMAL_OFFSET),
         attribute(3, 0, vk::Format::R32G32_SFLOAT, Vertex::UV_OFFSET),
         attribute(4, 0, vk::Format::R32_SFLOAT, Vertex::EMISSION_OFFSET),
+        attribute(5, 0, vk::Format::R32G32_SFLOAT, Vertex::MATERIAL_OFFSET),
     ];
     let bindings = [binding];
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
@@ -95,7 +96,7 @@ pub fn shadow(
         .vertex_attribute_descriptions(&attributes);
     let push = push_range(vk::ShaderStageFlags::VERTEX, 64);
     let layout = pipeline_layout(device, &[], &[push])?;
-    // Front-face culling reduces shadow acne for closed interior geometry.
+    // Level geometry is single-sided; culling would leave holes in the map.
     let pipeline = create(
         device,
         render_pass,
@@ -104,7 +105,7 @@ pub fn shadow(
         fragment,
         &vertex_input,
         true,
-        vk::CullModeFlags::FRONT,
+        vk::CullModeFlags::NONE,
         64,
     )?;
     Ok(Pipeline::new(device, pipeline, layout))

@@ -6,7 +6,11 @@
 //! OpenGL clip-space convention (Y up, depth in `[-1, 1]`).
 
 use anyhow::{Context, Result, anyhow, bail};
-use assets::generate_environment_cubemap;
+use assets::{
+    ENVIRONMENT_SIZE, IRRADIANCE_SIZE, PREFILTERED_MIP_LEVELS, PREFILTERED_SIZE,
+    generate_environment_cubemap_with_sun, generate_irradiance_cubemap,
+    generate_prefiltered_cubemap,
+};
 use glam::{Mat4, Vec2, Vec4};
 use glow::HasContext;
 use render::{BackendKind, FrameData, RenderStats, Renderer, UiAtlasFrame, VsyncMode};
@@ -85,6 +89,15 @@ impl GpuMesh {
                 false,
                 stride,
                 Vertex::EMISSION_OFFSET as i32,
+            );
+            gl.enable_vertex_attrib_array(5);
+            gl.vertex_attrib_pointer_f32(
+                5,
+                2,
+                glow::FLOAT,
+                false,
+                stride,
+                Vertex::MATERIAL_OFFSET as i32,
             );
 
             gl.bind_vertex_array(None);
@@ -322,6 +335,8 @@ pub struct OpenGlRenderer {
 
     shadow_fbo: glow::Framebuffer,
     shadow_depth: glow::Texture,
+    /// Static geometry is rendered into the shadow map once at startup.
+    shadow_ready: bool,
 
     world_program: ShaderProgram,
     shadow_program: ShaderProgram,
@@ -405,9 +420,20 @@ impl OpenGlRenderer {
         let font_size = (1, 1);
         let font = unsafe { texture_2d_r8(gl, 1, 1, &[255]) }?;
 
-        let environment = generate_environment_cubemap(128);
-        let irradiance = unsafe { cubemap_environment(gl, 128, &environment) }?;
-        let prefiltered = unsafe { cubemap_environment(gl, 128, &environment) }?;
+        let sun_direction =
+            (scene.primary_light.position - scene.primary_light.target).normalize_or_zero();
+        let environment = generate_environment_cubemap_with_sun(ENVIRONMENT_SIZE, sun_direction);
+        let irradiance_pixels =
+            generate_irradiance_cubemap(&environment, ENVIRONMENT_SIZE, IRRADIANCE_SIZE);
+        let prefiltered_pixels = generate_prefiltered_cubemap(
+            &environment,
+            ENVIRONMENT_SIZE,
+            PREFILTERED_SIZE,
+            PREFILTERED_MIP_LEVELS,
+        );
+        let irradiance = unsafe { cubemap_environment(gl, IRRADIANCE_SIZE, &[irradiance_pixels]) }?;
+        let prefiltered =
+            unsafe { cubemap_environment(gl, PREFILTERED_SIZE, &prefiltered_pixels) }?;
 
         let mut world_program = ShaderProgram::new(
             gl,
@@ -508,6 +534,7 @@ impl OpenGlRenderer {
             targets: Some(targets),
             shadow_fbo,
             shadow_depth,
+            shadow_ready: false,
             world_program,
             shadow_program,
             bright_program,
@@ -571,27 +598,29 @@ impl OpenGlRenderer {
         let visible = visible_meshes(&self.scene.meshes, &camera_planes);
         self.stats.draw_calls = visible.len() as u32;
 
-        // 1. Shadow map.
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.shadow_fbo));
-            gl.viewport(0, 0, SHADOW_MAP_SIZE as i32, SHADOW_MAP_SIZE as i32);
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_mask(true);
-            gl.depth_func(glow::LESS);
-            gl.disable(glow::BLEND);
-            gl.enable(glow::CULL_FACE);
-            gl.cull_face(glow::FRONT);
-            gl.clear(glow::DEPTH_BUFFER_BIT);
+        // 1. Shadow map. The demo level is static, so the depth map is baked
+        // once and reused for the whole session.
+        if !self.shadow_ready {
+            unsafe {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.shadow_fbo));
+                gl.viewport(0, 0, SHADOW_MAP_SIZE as i32, SHADOW_MAP_SIZE as i32);
+                gl.enable(glow::DEPTH_TEST);
+                gl.depth_mask(true);
+                gl.depth_func(glow::LESS);
+                gl.disable(glow::BLEND);
+                gl.disable(glow::CULL_FACE);
+                gl.clear(glow::DEPTH_BUFFER_BIT);
 
-            self.shadow_program.bind(gl);
-            self.shadow_program
-                .set_mat4(gl, "u_light_vp", &light_view_projection);
-            for &index in &shadow_visible {
-                let mesh = &self.scene.meshes[index];
-                gl.bind_vertex_array(Some(mesh.vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, mesh.vertex_count as i32);
+                self.shadow_program.bind(gl);
+                self.shadow_program
+                    .set_mat4(gl, "u_light_vp", &light_view_projection);
+                for &index in &shadow_visible {
+                    let mesh = &self.scene.meshes[index];
+                    gl.bind_vertex_array(Some(mesh.vao));
+                    gl.draw_arrays(glow::TRIANGLES, 0, mesh.vertex_count as i32);
+                }
             }
-            gl.disable(glow::CULL_FACE);
+            self.shadow_ready = true;
         }
 
         // 2. Forward pass into HDR + depth.
@@ -612,8 +641,11 @@ impl OpenGlRenderer {
             self.world_program.set_mat4(gl, "u_mvp", &view_projection);
             self.world_program
                 .set_mat4(gl, "u_light_vp", &light_view_projection);
-            self.world_program
-                .set_vec4(gl, "u_light_pos", light.position.extend(10_000.0));
+            self.world_program.set_vec4(
+                gl,
+                "u_light_pos",
+                light.position.extend(light.shadow.ortho_half_extent),
+            );
             self.world_program
                 .set_vec4(gl, "u_light_color", primary_color.extend(1.0));
             self.world_program
@@ -1142,13 +1174,11 @@ unsafe fn texture_2d_rgba8(
 
 unsafe fn cubemap_environment(
     gl: &glow::Context,
-    size: u32,
-    pixels: &[f32],
+    base_size: u32,
+    levels: &[Vec<f32>],
 ) -> Result<glow::Texture> {
     let texture = unsafe { gl.create_texture() }
         .map_err(|error| anyhow!("failed to create a cubemap: {error}"))?;
-    let bytes: &[u8] = bytemuck::cast_slice(pixels);
-    let face_size = bytes.len() / 6;
     // RGBA32F is filterable on desktop but not guaranteed by OpenGL ES 3.0.
     // RGBA16F is core-filterable there and more than enough for the procedural
     // environment (values peak around 50).
@@ -1158,29 +1188,44 @@ unsafe fn cubemap_environment(
     let internal_format = glow::RGBA32F as i32;
     unsafe {
         gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
-        for face in 0..6 {
-            let start = face * face_size;
-            gl.tex_image_2d(
-                glow::TEXTURE_CUBE_MAP_POSITIVE_X + face as u32,
-                0,
-                internal_format,
-                size as i32,
-                size as i32,
-                0,
-                glow::RGBA,
-                glow::FLOAT,
-                glow::PixelUnpackData::Slice(Some(&bytes[start..start + face_size])),
-            );
+        for (mip, pixels) in levels.iter().enumerate() {
+            let size = (base_size >> mip).max(1);
+            let bytes: &[u8] = bytemuck::cast_slice(pixels);
+            let face_size = bytes.len() / 6;
+            for face in 0..6 {
+                let start = face * face_size;
+                gl.tex_image_2d(
+                    glow::TEXTURE_CUBE_MAP_POSITIVE_X + face as u32,
+                    mip as i32,
+                    internal_format,
+                    size as i32,
+                    size as i32,
+                    0,
+                    glow::RGBA,
+                    glow::FLOAT,
+                    glow::PixelUnpackData::Slice(Some(&bytes[start..start + face_size])),
+                );
+            }
         }
+        let has_mips = levels.len() > 1;
         gl.tex_parameter_i32(
             glow::TEXTURE_CUBE_MAP,
             glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
+            if has_mips {
+                glow::LINEAR_MIPMAP_LINEAR as i32
+            } else {
+                glow::LINEAR as i32
+            },
         );
         gl.tex_parameter_i32(
             glow::TEXTURE_CUBE_MAP,
             glow::TEXTURE_MAG_FILTER,
             glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP,
+            glow::TEXTURE_MAX_LEVEL,
+            (levels.len().saturating_sub(1)) as i32,
         );
         gl.tex_parameter_i32(
             glow::TEXTURE_CUBE_MAP,

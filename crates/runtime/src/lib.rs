@@ -33,7 +33,11 @@ mod commands;
 mod console;
 pub mod game;
 
-pub use assets::{TextureData, font_atlas_rgba8, generate_environment_cubemap};
+pub use assets::{
+    ENVIRONMENT_SIZE, IRRADIANCE_SIZE, PREFILTERED_MIP_LEVELS, PREFILTERED_SIZE, TextureData,
+    font_atlas_rgba8, generate_environment_cubemap, generate_environment_cubemap_with_sun,
+    generate_irradiance_cubemap, generate_prefiltered_cubemap,
+};
 pub use game::{CommandContext, Game, GameConfig, UpdateContext};
 pub use platform::{
     Input, InputMap, PlatformCapabilities, TargetArch, TargetOS, WindowHints, winit,

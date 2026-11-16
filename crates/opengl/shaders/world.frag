@@ -22,10 +22,14 @@ in vec3 frag_normal;
 in vec3 frag_pos;
 in vec2 frag_uv;
 in float frag_emission;
+in vec2 frag_material;
 
 out vec4 out_color;
 
 #define PI 3.14159265359
+#define INV_PI 0.31830988618
+// PREFILTERED_MIP_LEVELS - 1 in crates/assets/src/environment.rs.
+#define PREFILTERED_MAX_LOD 7.0
 
 float D_GGX(vec3 N, vec3 H, float r) {
     float a = r * r;
@@ -48,17 +52,33 @@ vec3 F_Schlick(vec3 F0, float cosTheta) {
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-float calc_shadow(vec3 pos, vec3 normal) {
-    vec4 lp = u_light_vp * vec4(pos, 1.0);
+// Karis' split-sum environment BRDF approximation.
+vec2 env_brdf(float roughness, float NdotV) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Normal-offset shadows: slide the lookup along the surface normal by roughly
+// one shadow texel at grazing angles. This removes acne on floors and walls
+// without a large constant depth bias that would detach contact shadows.
+float calc_shadow(vec3 pos, vec3 normal, vec3 light_dir) {
+    float NdotL = max(dot(normal, light_dir), 0.0);
+    float shadow_size = float(textureSize(shadow_sampler, 0).x);
+    float texel_world = 2.0 * max(u_light_pos.w, 1.0) / shadow_size;
+    float slope = sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.15);
+    vec3 sample_pos = pos + normal * min(slope, 4.0) * texel_world;
+
+    vec4 lp = u_light_vp * vec4(sample_pos, 1.0);
     vec3 proj = lp.xyz / lp.w;
     proj.xy = proj.xy * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.z < 0.0) return 1.0;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
 
     vec2 texel = 1.0 / vec2(textureSize(shadow_sampler, 0));
-    vec3 light_dir = normalize(u_light_pos.xyz - pos);
-    float NdotL = max(dot(normal, light_dir), 0.0);
-    float bias = max(0.004 * (1.0 - NdotL), 0.0008);
+    float bias = max(0.0015 * (1.0 - NdotL), 0.00025);
 
     float shadow = 0.0;
     for (int x = -1; x <= 1; x++) {
@@ -89,7 +109,7 @@ vec3 compute_extra_light(vec3 N, vec3 V, vec3 albedo, vec3 F0,
 
     float NdotL = max(dot(N, L), 0.0);
     vec3 radiance = light_color * NdotL * atten * 4.0;
-    return (kD * albedo / PI + spec) * radiance;
+    return (kD * albedo * INV_PI + spec) * radiance;
 }
 
 void main() {
@@ -106,8 +126,10 @@ void main() {
     vec3 N = normalize(frag_normal);
     vec3 V = normalize(u_camera_pos.xyz - frag_pos);
 
-    float metallic = clamp(u_material.x, 0.0, 1.0);
-    float roughness = clamp(u_material.y, 0.04, 1.0);
+    // Per-vertex overrides keep polished metal, rough concrete and painted
+    // surfaces in one draw call. Negative components fall back to the scene.
+    float metallic = clamp(frag_material.x < 0.0 ? u_material.x : frag_material.x, 0.0, 1.0);
+    float roughness = clamp(frag_material.y < 0.0 ? u_material.y : frag_material.y, 0.045, 1.0);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
     // Primary light with the shadow map.
@@ -120,9 +142,9 @@ void main() {
     vec3 kD_p = (vec3(1.0) - F_p) * (1.0 - metallic);
 
     float NdotL_p = max(dot(N, L_p), 0.0);
-    float shadow = calc_shadow(frag_pos, N);
+    float shadow = calc_shadow(frag_pos, N, L_p);
     vec3 radiance_p = u_light_color.rgb * NdotL_p * shadow * 5.0;
-    vec3 direct_light = (kD_p * albedo / PI + spec_p) * radiance_p;
+    vec3 direct_light = (kD_p * albedo * INV_PI + spec_p) * radiance_p;
 
     // Up to eight local lights from the shared std140 buffer.
     for (int i = 0; i < 8; i++) {
@@ -133,16 +155,19 @@ void main() {
         direct_light += compute_extra_light(N, V, albedo, F0, metallic, roughness, lp, lc, r);
     }
 
-    // Image-based ambient light from the procedural environment.
+    // Image-based lighting. The irradiance map is cosine-convolved and the
+    // specular cubemap is GGX-prefiltered, so reflections stay smooth instead
+    // of flickering as the camera moves.
     float NdotV = max(dot(N, V), 0.0);
     vec3 F_env = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
     vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);
     vec3 irradiance = texture(irradiance_map, N).rgb;
-    vec3 diffuse_ibl = irradiance * albedo;
+    vec3 diffuse_ibl = kD_env * albedo * INV_PI * irradiance;
     vec3 R = reflect(-V, N);
-    vec3 prefiltered = texture(prefiltered_map, R).rgb;
-    vec3 specular_ibl = prefiltered * F_env;
-    vec3 ambient = (kD_env * diffuse_ibl + specular_ibl) * 0.3;
+    vec3 prefiltered = textureLod(prefiltered_map, R, roughness * PREFILTERED_MAX_LOD).rgb;
+    vec2 brdf = env_brdf(roughness, NdotV);
+    vec3 specular_ibl = prefiltered * (F0 * brdf.x + brdf.y);
+    vec3 ambient = diffuse_ibl + specular_ibl;
 
     out_color = vec4(direct_light + ambient, 1.0);
 }

@@ -163,19 +163,22 @@ impl Character {
     /// Advances the body by one frame.
     ///
     /// `wish` is a horizontal direction in world space (length is ignored).
-    /// `jump_pressed` is the press edge, not the held state.
+    /// `jump_pressed` is the press edge, used for normal jumping. `jump_held`
+    /// is the continuous Space state, used to ascend while flying.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         dt: f32,
         world: &PhysicsWorld,
         wish: Vec3,
         jump_pressed: bool,
+        jump_held: bool,
         crouch: bool,
         sprint: bool,
     ) {
         let dt = dt.clamp(0.0, 0.05);
         if self.flying {
-            self.update_flying(dt, wish, jump_pressed, crouch, sprint);
+            self.update_flying(dt, wish, jump_held, crouch, sprint);
             return;
         }
 
@@ -217,14 +220,16 @@ impl Character {
         self.integrate(dt, world);
     }
 
-    fn update_flying(&mut self, dt: f32, wish: Vec3, jump: bool, crouch: bool, sprint: bool) {
+    fn update_flying(&mut self, dt: f32, wish: Vec3, ascend: bool, crouch: bool, sprint: bool) {
         let speed = if sprint { FLY_SPEED * 1.8 } else { FLY_SPEED };
         let target = wish.normalize_or_zero() * speed;
         let blend = 1.0 - (-8.0 * dt).exp();
         self.velocity.x += (target.x - self.velocity.x) * blend;
         self.velocity.z += (target.z - self.velocity.z) * blend;
-        let vertical = if jump { 1.0 } else { 0.0 } - if crouch { 1.0 } else { 0.0 };
-        self.velocity.y += (vertical * speed - self.velocity.y) * blend;
+        let vertical = if ascend { 1.0 } else { 0.0 } - if crouch { 1.0 } else { 0.0 };
+        // Faster vertical blend for more responsive flight controls
+        let vertical_blend = 1.0 - (-20.0 * dt).exp();
+        self.velocity.y += (vertical * speed - self.velocity.y) * vertical_blend;
         self.position += self.velocity * dt;
         self.on_ground = false;
     }
@@ -517,14 +522,14 @@ mod tests {
     fn character_falls_and_lands_on_floor() {
         let world = floor_world();
         let mut character = Character::new(Vec3::new(0.0, 2.0, 0.0));
-        character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false);
+        character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false, false);
         assert!(!character.on_ground);
         assert!(
             character.position.y > 1.9,
             "falling must not snap to the floor"
         );
         for _ in 0..120 {
-            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false);
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false, false);
         }
         assert!(character.on_ground);
         assert!((character.position.y).abs() < 0.01);
@@ -542,7 +547,7 @@ mod tests {
         // Walk far enough to climb the step but stop before stepping off its
         // far edge, otherwise the character correctly falls back to the floor.
         for _ in 0..30 {
-            character.update(1.0 / 60.0, &world, Vec3::X, false, false, false);
+            character.update(1.0 / 60.0, &world, Vec3::X, false, false, false, false);
         }
         assert!(character.position.x > 1.5);
         assert!((character.position.y - 0.3).abs() < 0.01);
@@ -559,7 +564,7 @@ mod tests {
         world = PhysicsWorld::new(colliders);
         let mut character = Character::new(Vec3::new(0.0, 0.001, 0.0));
         for _ in 0..180 {
-            character.update(1.0 / 60.0, &world, Vec3::X, false, false, true);
+            character.update(1.0 / 60.0, &world, Vec3::X, false, false, false, true);
         }
         assert!(character.position.x < 2.0);
     }
@@ -569,11 +574,62 @@ mod tests {
         let world = floor_world();
         let mut character = Character::new(Vec3::new(0.0, 0.001, 0.0));
         for _ in 0..30 {
-            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false);
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false, false);
         }
         // Walk off the floor edge is not set up here; jump directly.
-        character.update(1.0 / 60.0, &world, Vec3::ZERO, true, false, false);
+        character.update(1.0 / 60.0, &world, Vec3::ZERO, true, true, false, false);
         assert!(character.position.y > 0.0);
         assert!(!character.on_ground);
+    }
+
+    #[test]
+    fn holding_jump_ascends_continuously_while_flying() {
+        let world = floor_world();
+        let mut character = Character::new(Vec3::new(0.0, 4.0, 0.0));
+        character.set_flying(true);
+        let start = character.position.y;
+        for _ in 0..60 {
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, true, false, false);
+        }
+        assert!(
+            character.position.y > start + 10.0,
+            "holding Space must keep ascending, got {}",
+            character.position.y - start
+        );
+        // After releasing jump, the character should decelerate and hover.
+        // It may coast up a bit more due to momentum before stopping.
+        let peak = character.position.y;
+        for _ in 0..60 {
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, false, false);
+        }
+        // Should stop near peak (hovering), not fall.
+        assert!(
+            (character.position.y - peak).abs() < 1.0,
+            "releasing jump in flight should hover, got y={}, peak={}",
+            character.position.y,
+            peak
+        );
+        // Now test descending with crouch
+        for _ in 0..30 {
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, false, true, false);
+        }
+        assert!(character.position.y < peak - 2.0);
+    }
+
+    #[test]
+    fn flying_ignores_world_collision() {
+        let mut world = floor_world();
+        let mut colliders = world.colliders().to_vec();
+        colliders.push(Aabb::new(
+            Vec3::new(-3.0, 0.0, -3.0),
+            Vec3::new(3.0, 2.0, 3.0),
+        ));
+        world = PhysicsWorld::new(colliders);
+        let mut character = Character::new(Vec3::new(0.0, 0.5, 0.0));
+        character.set_flying(true);
+        for _ in 0..30 {
+            character.update(1.0 / 60.0, &world, Vec3::ZERO, false, true, false, false);
+        }
+        assert!(character.position.y > 2.5);
     }
 }

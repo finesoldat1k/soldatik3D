@@ -5,6 +5,7 @@
 //! debug interface. Camera spawning and selection are engine features exposed
 //! through [`runtime::World`] and the console.
 
+pub mod debug_ui;
 pub mod demo;
 pub mod level;
 pub mod physics;

@@ -106,13 +106,14 @@ impl Player {
         world: &PhysicsWorld,
         axes: runtime::glam::Vec2,
         jump_pressed: bool,
+        jump_held: bool,
         crouch: bool,
         sprint: bool,
     ) {
         let previous_y = self.body.position.y;
         let wish = self.wish_direction(axes);
         self.body
-            .update(dt, world, wish, jump_pressed, crouch, sprint);
+            .update(dt, world, wish, jump_pressed, jump_held, crouch, sprint);
 
         // Smooth the camera up when the controller snapped onto a low step.
         let rise = self.body.position.y - previous_y;
@@ -183,6 +184,7 @@ pub fn default_input_map() -> InputMap {
         .bind("move_left", &[KeyCode::KeyA])
         .bind("move_right", &[KeyCode::KeyD])
         .bind("jump", &[KeyCode::Space])
+        .bind("jump_held", &[KeyCode::Space])
         .bind("crouch", &[KeyCode::ControlLeft])
         .bind("sprint", &[KeyCode::ShiftLeft])
         .bind("interact", &[KeyCode::KeyE])

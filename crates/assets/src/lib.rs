@@ -9,7 +9,11 @@ mod environment;
 mod font;
 mod texture;
 
-pub use environment::generate_environment_cubemap;
+pub use environment::{
+    ENVIRONMENT_SIZE, IRRADIANCE_SIZE, PREFILTERED_MIP_LEVELS, PREFILTERED_SIZE,
+    generate_environment_cubemap, generate_environment_cubemap_with_sun,
+    generate_irradiance_cubemap, generate_prefiltered_cubemap,
+};
 pub use font::{
     FONT_ATLAS_SIZE, FONT_CELL_SIZE, FONT_GLYPH_COLUMNS, FONT_GLYPH_HEIGHT, FONT_GLYPH_WIDTH,
     font_atlas_rgba8,

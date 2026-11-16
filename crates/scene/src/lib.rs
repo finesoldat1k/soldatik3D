@@ -29,7 +29,7 @@ pub mod world;
 pub use assets::TextureData;
 pub use camera::Camera;
 pub use camera_rig::{CameraId, CameraRig, NamedCamera};
-pub use geometry::{Aabb, Mesh, Vertex};
+pub use geometry::{Aabb, Mesh, Transform, Vertex, primitives};
 pub use light::{Light, LightUniformBuffer, MAX_LIGHTS, PrimaryLight, ShadowSettings};
 pub use material::Material;
 pub use scene::Scene;
@@ -40,7 +40,7 @@ pub mod prelude {
     pub use crate::TextureData;
     pub use crate::camera::Camera;
     pub use crate::camera_rig::{CameraId, CameraRig, NamedCamera};
-    pub use crate::geometry::{Aabb, Mesh, Vertex};
+    pub use crate::geometry::{Aabb, Mesh, Transform, Vertex, primitives};
     pub use crate::light::{Light, LightUniformBuffer, MAX_LIGHTS, PrimaryLight, ShadowSettings};
     pub use crate::material::Material;
     pub use crate::scene::Scene;
