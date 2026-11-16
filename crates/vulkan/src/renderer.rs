@@ -770,7 +770,7 @@ impl VulkanRenderer {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_millis();
         let filename = format!("screenshot_{timestamp}.png");
 
         let device = &self.context.device;

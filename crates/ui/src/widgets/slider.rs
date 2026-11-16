@@ -94,7 +94,7 @@ impl Ui {
 
         let mut response = self.interact_node(id, Sense::DRAG);
         if (response.pressed || response.active)
-            && let Some(pointer) = self.interaction_pointer()
+            && let Some(pointer) = self.interaction_pointer_for(id)
             && pointer.down
         {
             {

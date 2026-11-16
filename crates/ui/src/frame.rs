@@ -41,8 +41,12 @@ pub struct Ui {
     pub(crate) draw: UiDrawList,
     pub(crate) input: UiInput,
     cursors: Vec<Cursor>,
-    /// Pointer currently owning a widget: `(pointer id, node id)`.
-    pub(crate) active: Option<(u64, UiId)>,
+    /// Pointers currently owning widgets: `(pointer id, node id)`.
+    ///
+    /// Mobile games routinely touch several controls at once (joystick plus
+    /// jump, camera plus interact), so ownership is tracked per pointer instead
+    /// of globally.
+    pub(crate) active: Vec<(u64, UiId)>,
     /// Pointer currently dragging a scrollbar.
     pub(crate) active_scrollbar: Option<(u64, UiId)>,
     /// Popup rectangles that block widgets below them. Kept for one frame so
@@ -69,7 +73,7 @@ impl Ui {
             draw: UiDrawList::new(1, 1),
             input: UiInput::default(),
             cursors: Vec::new(),
-            active: None,
+            active: Vec::new(),
             active_scrollbar: None,
             blockers_prev: Vec::new(),
             blockers_next: Vec::new(),
@@ -135,13 +139,11 @@ impl Ui {
         });
         self.blockers_prev = std::mem::take(&mut self.blockers_next);
 
-        if let Some((pointer, _)) = self.active
-            && self.input.pointer(pointer).is_none()
-        {
-            self.active = None;
-        }
+        let input = &self.input;
+        self.active
+            .retain(|(pointer, _)| input.pointer(*pointer).is_some());
         if let Some((pointer, _)) = self.active_scrollbar
-            && self.input.pointer(pointer).is_none()
+            && input.pointer(pointer).is_none()
         {
             self.active_scrollbar = None;
         }
@@ -163,20 +165,12 @@ impl Ui {
 
         // If the owning widget disappeared while the pointer was down, no
         // widget will consume the release. Drop stale ownership here so it
-        // cannot block the whole UI on the next frame.
-        if let Some((pointer, _)) = self.active
-            && self
-                .input
-                .pointer(pointer)
-                .is_none_or(|pointer| !pointer.down)
-        {
-            self.active = None;
-        }
+        // cannot block other controls on the next frame.
+        let input = &self.input;
+        self.active
+            .retain(|(pointer, _)| input.pointer(*pointer).is_some_and(|pointer| pointer.down));
         if let Some((pointer, _)) = self.active_scrollbar
-            && self
-                .input
-                .pointer(pointer)
-                .is_none_or(|pointer| !pointer.down)
+            && input.pointer(pointer).is_none_or(|pointer| !pointer.down)
         {
             self.active_scrollbar = None;
         }
@@ -186,9 +180,9 @@ impl Ui {
     }
 
     /// Whether the game should suppress camera look / world clicks because the
-    /// UI is currently using the pointer.
+    /// UI is currently using at least one pointer.
     pub fn captures_pointer(&self) -> bool {
-        self.active.is_some() || self.active_scrollbar.is_some()
+        !self.active.is_empty() || self.active_scrollbar.is_some()
     }
 
     /// Primary pointer position, if any.
@@ -329,30 +323,33 @@ impl Ui {
         }
 
         let primary = self.input.primary().copied();
-        let active_here = self.active.filter(|&(_, active_id)| active_id == id);
+        let captured = self.capture_for_node(id);
 
-        // Press acquisition.
-        if self.active.is_none() && sense.click {
+        // Press acquisition. Every unclaimed pointer can press a different
+        // widget, which is what makes joystick + jump / look + interact work.
+        if sense.click && captured.is_none() {
             let pressed = self.input.pointers.iter().find(|pointer| {
                 pointer.pressed
+                    && !self.pointer_claimed(pointer.id)
                     && rect.contains(pointer.position)
                     && !self.position_blocked(pointer.position)
             });
             if let Some(pointer) = pressed {
-                self.active = Some((pointer.id, id));
+                self.active.push((pointer.id, id));
                 response.pressed = true;
                 response.hovered = true;
             }
         }
 
-        // Held/released state.
-        if let Some((pointer_id, _)) = self.active
-            && self.active.is_some_and(|(_, active_id)| active_id == id)
-            && let Some(pointer) = self.input.pointer(pointer_id)
+        // Held/released state. Only the pointer that pressed this node can
+        // release it; another finger on the same widget is ignored.
+        let held = captured.or_else(|| self.capture_for_node(id));
+        if let Some(pointer_id) = held
+            && let Some(pointer) = self.input.pointer(pointer_id).copied()
         {
             response.hovered = rect.contains(pointer.position) || response.hovered;
             response.active = true;
-            response.pressed = pointer.down;
+            response.pressed = response.pressed || pointer.down;
             if sense.drag {
                 response.dragged = pointer.down && pointer.delta() != Vec2::ZERO;
                 response.drag_delta = pointer.delta();
@@ -360,31 +357,29 @@ impl Ui {
             if pointer.released {
                 response.released = true;
                 response.clicked = rect.contains(pointer.position);
-                self.active = None;
+                self.active.retain(|(active_pointer, active_owner)| {
+                    !(*active_owner == id && *active_pointer == pointer_id)
+                });
+                response.active = false;
             }
         }
+        // A capture may have been created by the press acquisition above.
+        if response.pressed && !response.active && captured.is_none() {
+            response.active = self.capture_for_node(id).is_some();
+        }
 
-        // Hover without an active interaction.
-        if self.active.is_none()
+        // Hover without an active interaction. A pointer captured by another
+        // widget must not highlight controls underneath it.
+        if captured.is_none()
             && !response.hovered
             && let Some(pointer) = primary
             && rect.contains(pointer.position)
+            && self
+                .active_owner(pointer.id)
+                .is_none_or(|owner| owner == id)
             && !self.position_blocked(pointer.position)
         {
             response.hovered = true;
-        }
-
-        // A quick tap can press and release inside a single frame; `active_here`
-        // still describes this node on the frame after the press, so ensure a
-        // release is not lost if the active marker was cleared above.
-        if let Some((_, active_id)) = active_here
-            && active_id == id
-            && !response.active
-            && let Some(pointer) = primary
-            && pointer.released
-        {
-            response.released = true;
-            response.clicked = rect.contains(pointer.position);
         }
 
         if let Some(node) = self.tree.node_mut(id) {
@@ -417,10 +412,10 @@ impl Ui {
         self.input.primary().copied()
     }
 
-    /// Pointer that currently owns a widget, falling back to the primary
+    /// Pointer that currently owns `owner`, falling back to the primary
     /// pointer. Sliders use it to keep tracking the same finger while dragging.
-    pub(crate) fn interaction_pointer(&self) -> Option<UiPointer> {
-        if let Some((pointer_id, _)) = self.active
+    pub(crate) fn interaction_pointer_for(&self, owner: UiId) -> Option<UiPointer> {
+        if let Some(pointer_id) = self.capture_for_node(owner)
             && let Some(pointer) = self.input.pointer(pointer_id)
         {
             return Some(*pointer);
@@ -428,21 +423,51 @@ impl Ui {
         self.primary_pointer()
     }
 
-    /// Reserves a pointer for a non-node control such as the joystick.
-    /// Returns `false` when another widget or control already owns a pointer.
+    /// Widget that owns `pointer`, if any.
+    pub(crate) fn active_owner(&self, pointer: u64) -> Option<UiId> {
+        self.active
+            .iter()
+            .find(|(active_pointer, _)| *active_pointer == pointer)
+            .map(|(_, owner)| *owner)
+    }
+
+    /// Whether `pointer` is already dragging or pressing a widget.
+    pub(crate) fn pointer_claimed(&self, pointer: u64) -> bool {
+        self.active
+            .iter()
+            .any(|(active_pointer, _)| *active_pointer == pointer)
+    }
+
+    /// Pointer id that pressed `owner`, if it is still captured.
+    pub(crate) fn capture_for_node(&self, owner: UiId) -> Option<u64> {
+        self.active
+            .iter()
+            .find(|(_, active_owner)| *active_owner == owner)
+            .map(|(pointer, _)| *pointer)
+    }
+
+    /// Whether any pointer is captured by `owner`.
+    pub(crate) fn owner_active(&self, owner: UiId) -> bool {
+        self.active
+            .iter()
+            .any(|(_, active_owner)| *active_owner == owner)
+    }
+
+    /// Reserves a pointer for a widget or a non-node control such as the
+    /// joystick. Different pointers can be claimed independently.
     pub(crate) fn claim_pointer(&mut self, pointer: u64, owner: UiId) -> bool {
-        if self.active.is_none() {
-            self.active = Some((pointer, owner));
-            true
-        } else {
+        if self.pointer_claimed(pointer) {
             false
+        } else {
+            self.active.push((pointer, owner));
+            true
         }
     }
 
     pub(crate) fn release_pointer(&mut self, pointer: u64, owner: UiId) {
-        if self.active == Some((pointer, owner)) {
-            self.active = None;
-        }
+        self.active.retain(|(active_pointer, active_owner)| {
+            !(*active_pointer == pointer && *active_owner == owner)
+        });
     }
 
     // ----- raw drawing facade ----------------------------------------------
@@ -914,33 +939,36 @@ impl Ui {
     fn refresh_visuals(&mut self) {
         let primary = self.input.primary().copied();
         let blockers = std::mem::take(&mut self.blockers_next);
-        let active = self.active;
+        let active = self.active.clone();
+        let primary_owner = primary.and_then(|pointer| self.active_owner(pointer.id));
         let mut updates = Vec::new();
         for node in self.tree.nodes_in_order() {
             if !node.visible || node.kind == WidgetKind::Container {
                 continue;
             }
+            let captured = active.iter().any(|(_, owner)| *owner == node.id);
             let hovered = primary.is_some_and(|pointer| {
                 node.rect.contains(pointer.position)
                     && !blockers
                         .iter()
                         .chain(self.blockers_prev.iter())
                         .any(|rect| rect.contains(pointer.position))
-                    && active.is_none_or(|(_, id)| id == node.id)
+                    && primary_owner.is_none_or(|owner| owner == node.id)
             });
-            let pressed = active.is_some_and(|(pointer, id)| {
-                id == node.id
-                    && primary.is_some_and(|pointer_state| {
-                        pointer_state.id == pointer && pointer_state.down
-                    })
+            let pressed = active.iter().any(|(pointer, owner)| {
+                *owner == node.id
+                    && self
+                        .input
+                        .pointer(*pointer)
+                        .is_some_and(|pointer| pointer.down)
             });
-            updates.push((node.id, hovered, pressed));
+            updates.push((node.id, hovered, pressed, captured));
         }
-        for (id, hovered, pressed) in updates {
+        for (id, hovered, pressed, active) in updates {
             if let Some(node) = self.tree.node_mut(id) {
                 node.hovered = hovered;
                 node.pressed = pressed;
-                node.active = active.is_some_and(|(_, active_id)| active_id == id);
+                node.active = active;
             }
         }
         self.blockers_next = blockers;
@@ -950,8 +978,10 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::PointerKind;
-    use crate::widgets::{ButtonStyle, TouchCameraState, TouchCameraStyle};
+    use crate::input::{PointerKind, TOUCH_ID_BIT};
+    use crate::widgets::{
+        ButtonStyle, JoystickState, JoystickStyle, TouchCameraState, TouchCameraStyle,
+    };
 
     fn pointer(position: Vec2, down: bool, pressed: bool, released: bool) -> UiInput {
         UiInput {
@@ -964,6 +994,26 @@ mod tests {
                 pressed,
                 released,
             }],
+            ..UiInput::default()
+        }
+    }
+
+    fn touch(id: u64, position: Vec2, down: bool, pressed: bool, released: bool) -> UiPointer {
+        UiPointer {
+            id: id | TOUCH_ID_BIT,
+            kind: PointerKind::Touch,
+            position,
+            prev_position: position,
+            down,
+            pressed,
+            released,
+        }
+    }
+
+    fn touches(pointers: Vec<UiPointer>) -> UiInput {
+        UiInput {
+            pointers,
+            touch_mode: true,
             ..UiInput::default()
         }
     }
@@ -1026,5 +1076,183 @@ mod tests {
         ui.end_frame();
         assert!(released.clicked);
         assert!(!camera.dragging);
+    }
+
+    #[test]
+    fn joystick_and_button_accept_separate_fingers() {
+        let viewport = Vec2::new(400.0, 300.0);
+        let jump_rect = Rect::new(300.0, 200.0, 80.0, 80.0);
+        let jump_center = jump_rect.center();
+        let mut ui = Ui::new();
+        let mut joystick = JoystickState::default();
+        let mut style = JoystickStyle::from_theme(ui.theme());
+        style.show_hint = false;
+
+        ui.begin_frame_snapshot(UiInput::default(), viewport);
+        frame_button(&mut ui, jump_rect);
+        ui.virtual_joystick(&mut joystick, &style);
+        ui.end_frame();
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(100.0, 200.0), true, true, false),
+                touch(2, jump_center, true, true, false),
+            ]),
+            viewport,
+        );
+        let pressed = frame_button(&mut ui, jump_rect);
+        ui.virtual_joystick(&mut joystick, &style);
+        ui.end_frame();
+        assert!(pressed.pressed);
+        assert!(joystick.active);
+
+        // Move the movement finger while the jump finger stays down.
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(170.0, 200.0), true, false, false),
+                touch(2, jump_center, true, false, false),
+            ]),
+            viewport,
+        );
+        let held = frame_button(&mut ui, jump_rect);
+        let axes = ui.virtual_joystick(&mut joystick, &style);
+        ui.end_frame();
+        assert!(axes.x > 0.5, "joystick should report rightward movement");
+        assert!(held.active);
+        assert!(joystick.active);
+
+        // Lifting the jump finger must release the button but keep movement.
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(170.0, 200.0), true, false, false),
+                touch(2, jump_center, false, false, true),
+            ]),
+            viewport,
+        );
+        let released = frame_button(&mut ui, jump_rect);
+        ui.virtual_joystick(&mut joystick, &style);
+        ui.end_frame();
+        assert!(released.clicked);
+        assert!(joystick.active);
+
+        ui.begin_frame_snapshot(
+            touches(vec![touch(1, Vec2::new(170.0, 200.0), false, false, true)]),
+            viewport,
+        );
+        frame_button(&mut ui, jump_rect);
+        ui.virtual_joystick(&mut joystick, &style);
+        ui.end_frame();
+        assert!(!joystick.active);
+    }
+
+    #[test]
+    fn joystick_and_camera_track_different_fingers() {
+        let viewport = Vec2::new(400.0, 300.0);
+        let mut ui = Ui::new();
+        let mut joystick = JoystickState::default();
+        let mut joystick_style = JoystickStyle::from_theme(ui.theme());
+        joystick_style.show_hint = false;
+        let mut camera = TouchCameraState::default();
+        let camera_style = TouchCameraStyle::from_theme(ui.theme());
+
+        ui.begin_frame_snapshot(UiInput::default(), viewport);
+        ui.virtual_joystick(&mut joystick, &joystick_style);
+        ui.touch_camera(&mut camera, &camera_style);
+        ui.end_frame();
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(80.0, 180.0), true, true, false),
+                touch(2, Vec2::new(300.0, 120.0), true, true, false),
+            ]),
+            viewport,
+        );
+        ui.virtual_joystick(&mut joystick, &joystick_style);
+        let first = ui.touch_camera(&mut camera, &camera_style);
+        ui.end_frame();
+        assert!(joystick.active);
+        assert!(camera.dragging);
+        assert_eq!(first, Vec2::ZERO, "the first frame only acquires the drag");
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(80.0, 180.0), true, false, false),
+                touch(2, Vec2::new(320.0, 140.0), true, false, false),
+            ]),
+            viewport,
+        );
+        ui.virtual_joystick(&mut joystick, &joystick_style);
+        let delta = ui.touch_camera(&mut camera, &camera_style);
+        ui.end_frame();
+        assert!(joystick.active);
+        assert!(camera.dragging);
+        assert!(delta.x > 0.0 && delta.y > 0.0);
+
+        // Releasing the look finger must not cancel the joystick.
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, Vec2::new(80.0, 180.0), true, false, false),
+                touch(2, Vec2::new(320.0, 140.0), false, false, true),
+            ]),
+            viewport,
+        );
+        ui.virtual_joystick(&mut joystick, &joystick_style);
+        ui.touch_camera(&mut camera, &camera_style);
+        ui.end_frame();
+        assert!(!camera.dragging);
+        assert!(joystick.active);
+    }
+
+    #[test]
+    fn two_buttons_accept_two_fingers() {
+        let viewport = Vec2::new(400.0, 300.0);
+        let left = Rect::new(20.0, 20.0, 100.0, 40.0);
+        let right = Rect::new(220.0, 20.0, 100.0, 40.0);
+        let mut ui = Ui::new();
+
+        ui.begin_frame_snapshot(UiInput::default(), viewport);
+        frame_button(&mut ui, left);
+        frame_button(&mut ui, right);
+        ui.end_frame();
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, left.center(), true, true, false),
+                touch(2, right.center(), true, true, false),
+            ]),
+            viewport,
+        );
+        let left_pressed = frame_button(&mut ui, left);
+        let right_pressed = frame_button(&mut ui, right);
+        ui.end_frame();
+        assert!(left_pressed.pressed);
+        assert!(right_pressed.pressed);
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, left.center(), true, false, false),
+                touch(2, right.center(), true, false, false),
+            ]),
+            viewport,
+        );
+        let left_held = frame_button(&mut ui, left);
+        let right_held = frame_button(&mut ui, right);
+        ui.end_frame();
+        assert!(left_held.active);
+        assert!(right_held.active);
+
+        ui.begin_frame_snapshot(
+            touches(vec![
+                touch(1, left.center(), false, false, true),
+                touch(2, right.center(), true, false, false),
+            ]),
+            viewport,
+        );
+        let left_released = frame_button(&mut ui, left);
+        let right_held = frame_button(&mut ui, right);
+        ui.end_frame();
+        assert!(left_released.clicked);
+        assert!(!left_released.active);
+        assert!(right_held.active);
     }
 }

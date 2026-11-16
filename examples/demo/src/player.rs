@@ -1,109 +1,177 @@
-//! First-person player controller for the demo.
+//! First-person player: camera, look and movement on top of [`crate::physics`].
 
 use runtime::glam::Vec3;
 use runtime::winit::keyboard::KeyCode;
-use runtime::{Aabb, Camera, Input, InputMap};
+use runtime::{Camera, Input, InputMap};
 
-const PLAYER_HEIGHT: f32 = 1.7;
-const PLAYER_RADIUS: f32 = 0.5;
-const GRAVITY: f32 = 25.0;
-const JUMP_FORCE: f32 = 11.0;
-const MOUSE_SENSITIVITY: f32 = 0.002;
+use crate::physics::{Character, EYE_HEIGHT, PhysicsWorld};
+
+const BASE_FOV: f32 = 70.0;
+const SPRINT_FOV: f32 = 78.0;
+const MAX_PITCH: f32 = 88.0_f32 * std::f32::consts::PI / 180.0;
 
 pub struct Player {
-    camera: Camera,
-    velocity: Vec3,
-    is_flying: bool,
-    on_ground: bool,
-    current_fov: f32,
+    pub body: Character,
+    pub yaw: f32,
+    pub pitch: f32,
+    fov: f32,
     bob_time: f32,
-    bob_intensity: f32,
-}
-
-impl Default for Player {
-    fn default() -> Self {
-        Self::new()
-    }
+    bob_amount: f32,
+    /// Negative offset used to smooth camera height after an automatic step.
+    step_offset: f32,
 }
 
 impl Player {
-    pub fn new() -> Self {
-        let camera = Camera {
-            position: Vec3::new(0.0, -8.29, 0.0),
-            yaw: 90.0_f32.to_radians(),
-            pitch: 0.0,
-            fov_y_degrees: 45.0,
-            z_near: 0.1,
-            z_far: 100.0,
-        };
-
+    pub fn new(position: Vec3, yaw: f32) -> Self {
         Self {
-            camera,
-            velocity: Vec3::ZERO,
-            is_flying: false,
-            on_ground: true,
-            current_fov: 45.0,
+            body: Character::new(position),
+            yaw,
+            pitch: 0.0,
+            fov: BASE_FOV,
             bob_time: 0.0,
-            bob_intensity: 0.0,
+            bob_amount: 0.0,
+            step_offset: 0.0,
         }
     }
 
-    pub fn camera(&self) -> Camera {
-        self.render_camera()
+    pub fn teleport(&mut self, position: Vec3, yaw: f32) {
+        self.body.teleport(position);
+        self.yaw = yaw;
+        self.pitch = 0.0;
+        self.bob_time = 0.0;
+        self.bob_amount = 0.0;
+        self.step_offset = 0.0;
     }
 
     pub fn is_flying(&self) -> bool {
-        self.is_flying
+        self.body.flying
     }
 
     pub fn set_flying(&mut self, flying: bool) {
-        self.is_flying = flying;
-        self.velocity = Vec3::ZERO;
-        if flying {
-            self.on_ground = false;
+        self.body.set_flying(flying);
+    }
+
+    /// Applies a look delta in radians.
+    pub fn look(&mut self, yaw_delta: f32, pitch_delta: f32) {
+        self.yaw = (self.yaw + yaw_delta).rem_euclid(std::f32::consts::TAU);
+        self.pitch = (self.pitch + pitch_delta).clamp(-MAX_PITCH, MAX_PITCH);
+    }
+
+    /// Mouse input is in pixels; the caller supplies a radians-per-pixel value.
+    pub fn look_mouse(&mut self, delta: runtime::glam::Vec2, sensitivity: f32, invert_y: bool) {
+        if delta.length_squared() <= 0.0 {
+            return;
+        }
+        let yaw = delta.x * sensitivity;
+        let pitch = delta.y * sensitivity * if invert_y { 1.0 } else { -1.0 };
+        self.look(yaw, pitch);
+    }
+
+    /// Keyboard camera rotation, independent of pointer lock.
+    pub fn look_keyboard(&mut self, input: &Input, dt: f32) {
+        let speed = 2.2 * dt;
+        let mut yaw = 0.0;
+        let mut pitch = 0.0;
+        if input.action_down("camera_rot_left") {
+            yaw -= speed;
+        }
+        if input.action_down("camera_rot_right") {
+            yaw += speed;
+        }
+        if input.action_down("camera_rot_up") {
+            pitch += speed;
+        }
+        if input.action_down("camera_rot_down") {
+            pitch -= speed;
+        }
+        if yaw != 0.0 || pitch != 0.0 {
+            self.look(yaw, pitch);
         }
     }
 
-    /// Moves the player to a new position. Yaw and pitch are in degrees.
-    pub fn teleport(
+    /// World-space movement direction for `(strafe, forward)` axes.
+    pub fn wish_direction(&self, axes: runtime::glam::Vec2) -> Vec3 {
+        if axes.length_squared() < 1e-6 {
+            return Vec3::ZERO;
+        }
+        let forward = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin());
+        let right = Vec3::new(-forward.z, 0.0, forward.x);
+        (forward * axes.y + right * axes.x).normalize_or_zero()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(
         &mut self,
-        position: Vec3,
-        yaw_degrees: Option<f32>,
-        pitch_degrees: Option<f32>,
+        dt: f32,
+        world: &PhysicsWorld,
+        axes: runtime::glam::Vec2,
+        jump_pressed: bool,
+        crouch: bool,
+        sprint: bool,
     ) {
-        self.camera.position = position;
-        if let Some(yaw) = yaw_degrees {
-            self.camera.yaw = yaw.to_radians();
+        let previous_y = self.body.position.y;
+        let wish = self.wish_direction(axes);
+        self.body
+            .update(dt, world, wish, jump_pressed, crouch, sprint);
+
+        // Smooth the camera up when the controller snapped onto a low step.
+        let rise = self.body.position.y - previous_y;
+        if self.body.on_ground && rise > 0.0 && rise <= 0.5 {
+            self.step_offset = (self.step_offset - rise).max(-0.5);
         }
-        if let Some(pitch) = pitch_degrees {
-            self.camera.pitch = pitch.to_radians();
+        self.step_offset *= (-18.0 * dt.max(0.0)).exp();
+
+        let horizontal_speed = Vec3::new(self.body.velocity.x, 0.0, self.body.velocity.z).length();
+        let target_fov = if sprint && horizontal_speed > 6.0 {
+            SPRINT_FOV
+        } else {
+            BASE_FOV
+        };
+        self.fov += (target_fov - self.fov) * (1.0 - (-6.0 * dt).exp());
+
+        let moving = self.body.on_ground && horizontal_speed > 0.4;
+        let target_bob = if moving {
+            (horizontal_speed / 5.6).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.bob_amount += (target_bob - self.bob_amount) * (1.0 - (-10.0 * dt).exp());
+        if moving {
+            self.bob_time += dt * (5.2 + horizontal_speed * 1.1);
         }
-        self.velocity = Vec3::ZERO;
-        self.on_ground = false;
     }
 
-    /// Returns to the initial spawn position and resets flight mode.
-    pub fn reset(&mut self) {
-        *self = Self::new();
+    /// Camera for the current frame, including head bob and step smoothing.
+    pub fn camera(&self) -> Camera {
+        let forward = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin());
+        let right = Vec3::new(-forward.z, 0.0, forward.x);
+        let bob_vertical = (self.bob_time * 2.0).sin() * 0.035 * self.bob_amount;
+        let bob_side = (self.bob_time).cos() * 0.018 * self.bob_amount;
+        let eye = self.body.position
+            + Vec3::new(0.0, EYE_HEIGHT + bob_vertical + self.step_offset, 0.0)
+            + right * bob_side;
+        Camera {
+            position: eye,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            fov_y_degrees: self.fov,
+            z_near: 0.05,
+            z_far: 180.0,
+        }
     }
 
-    /// Stops horizontal movement, used when the cursor is released for the
-    /// debug menu.
-    pub fn stop(&mut self) {
-        self.velocity.x = 0.0;
-        self.velocity.z = 0.0;
-        self.bob_intensity = 0.0;
+    /// Forward vector used by interaction checks.
+    pub fn look_direction(&self) -> Vec3 {
+        Vec3::new(
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
+        )
     }
 
-    /// Adds to the camera yaw (for touch camera control).
-    pub fn add_yaw(&mut self, delta: f32) {
-        self.camera.yaw += delta;
-    }
-
-    /// Adds to the camera pitch (for touch camera control).
-    pub fn add_pitch(&mut self, delta: f32) {
-        self.camera.pitch =
-            (self.camera.pitch + delta).clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+    /// Eye position used by interaction checks.
+    pub fn eye_position(&self) -> Vec3 {
+        self.body.position + Vec3::Y * EYE_HEIGHT
     }
 }
 
@@ -117,398 +185,12 @@ pub fn default_input_map() -> InputMap {
         .bind("jump", &[KeyCode::Space])
         .bind("crouch", &[KeyCode::ControlLeft])
         .bind("sprint", &[KeyCode::ShiftLeft])
+        .bind("interact", &[KeyCode::KeyE])
+        .bind("restart", &[KeyCode::KeyR])
+        .bind("pause", &[KeyCode::KeyP])
         .bind("fly_toggle", &[KeyCode::KeyF])
         .bind("camera_rot_left", &[KeyCode::ArrowLeft])
         .bind("camera_rot_right", &[KeyCode::ArrowRight])
         .bind("camera_rot_up", &[KeyCode::ArrowUp])
         .bind("camera_rot_down", &[KeyCode::ArrowDown])
-}
-
-impl Player {
-    /// Updates the player with desktop input (mouse + keyboard).
-    pub fn update(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
-        self.update_with_virtual(dt, input, colliders);
-    }
-
-    /// Updates the player with desktop input. Touch controls feed the same
-    /// movement path through [`Player::update_with_virtual_mobile`].
-    fn update_with_virtual(&mut self, dt: f32, input: &Input, colliders: &[Aabb]) {
-        // Handle fly toggle from the keyboard.
-        let fly_toggle = input.action_pressed("fly_toggle");
-        if fly_toggle {
-            self.is_flying = !self.is_flying;
-            self.velocity = Vec3::ZERO;
-        }
-
-        // Handle mouse look (desktop) or touch look (mobile)
-        let mouse = input.mouse_delta();
-        if mouse.length_squared() > 0.0 {
-            self.camera.yaw += mouse.x * MOUSE_SENSITIVITY;
-            self.camera.pitch -= mouse.y * MOUSE_SENSITIVITY;
-            self.camera.pitch = self
-                .camera
-                .pitch
-                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
-        }
-
-        // Keyboard rotation (for desktop without mouse capture)
-        let rotation_speed = 2.0 * dt;
-        if input.action_down("camera_rot_left") {
-            self.camera.yaw -= rotation_speed;
-        }
-        if input.action_down("camera_rot_right") {
-            self.camera.yaw += rotation_speed;
-        }
-        if input.action_down("camera_rot_up") {
-            self.camera.pitch += rotation_speed;
-        }
-        if input.action_down("camera_rot_down") {
-            self.camera.pitch -= rotation_speed;
-        }
-        self.camera.pitch = self
-            .camera
-            .pitch
-            .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
-
-        // Determine movement input from the keyboard.
-        let move_forward = input.action_down("move_forward");
-        let move_backward = input.action_down("move_backward");
-        let move_left = input.action_down("move_left");
-        let move_right = input.action_down("move_right");
-
-        let sprinting = input.action_down("sprint");
-        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
-
-        let max_speed = if self.is_flying {
-            if sprinting { 24.0 } else { 12.0 }
-        } else if self.on_ground {
-            if sprinting { 12.0 } else { 6.0 }
-        } else {
-            horizontal_speed.max(6.0)
-        };
-
-        let forward = Vec3::new(self.camera.yaw.cos(), 0.0, self.camera.yaw.sin()).normalize();
-        let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
-
-        let mut wish_direction = Vec3::ZERO;
-        if move_forward {
-            wish_direction += forward;
-        }
-        if move_backward {
-            wish_direction -= forward;
-        }
-        if move_left {
-            wish_direction -= right;
-        }
-        if move_right {
-            wish_direction += right;
-        }
-        if wish_direction.length_squared() > 0.0 {
-            wish_direction = wish_direction.normalize();
-        }
-
-        if self.is_flying {
-            let target_velocity = wish_direction * max_speed;
-            let blend = (10.0 * dt).clamp(0.0, 1.0);
-            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
-            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
-
-            let jump_down = input.action_down("jump");
-            if jump_down {
-                self.velocity.y += 60.0 * dt;
-            }
-            if input.action_down("crouch") {
-                self.velocity.y -= 60.0 * dt;
-            }
-            self.velocity.y *= (1.0 - 5.0 * dt).max(0.0);
-
-            self.apply_movement(dt, colliders, false);
-            self.on_ground = false;
-        } else {
-            let target_velocity = wish_direction * max_speed;
-            let acceleration = if self.on_ground { 15.0 } else { 3.0 };
-            let blend = (acceleration * dt).clamp(0.0, 1.0);
-            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
-            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
-            self.velocity.y -= GRAVITY * dt;
-
-            let jump_pressed = input.action_down("jump");
-            if self.on_ground && jump_pressed {
-                self.velocity.y = JUMP_FORCE;
-                self.on_ground = false;
-            }
-            self.apply_movement(dt, colliders, true);
-        }
-
-        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
-        let speed_ratio = (horizontal_speed / 12.0).clamp(0.0, 1.0);
-        let target_fov = 45.0 + speed_ratio.powi(3) * 20.0;
-        self.current_fov += (target_fov - self.current_fov) * dt * 8.0;
-        self.camera.fov_y_degrees = self.current_fov;
-
-        let target_bob = if self.on_ground {
-            (horizontal_speed / 6.0).min(1.0)
-        } else {
-            0.0
-        };
-        self.bob_intensity += (target_bob - self.bob_intensity) * dt * 10.0;
-        if self.on_ground && horizontal_speed > 0.1 {
-            self.bob_time += dt * (horizontal_speed * 0.8 + 1.0);
-        }
-    }
-
-    /// Updates the player with mobile virtual input (joystick vector, jump, fly toggle).
-    pub fn update_with_virtual_mobile(
-        &mut self,
-        dt: f32,
-        input: &Input,
-        colliders: &[Aabb],
-        move_input: Vec3,
-        jump_pressed: bool,
-        fly_toggle: bool,
-    ) {
-        if fly_toggle {
-            self.is_flying = !self.is_flying;
-            self.velocity = Vec3::ZERO;
-        }
-
-        // Handle mouse look (desktop)
-        let mouse = input.mouse_delta();
-        if mouse.length_squared() > 0.0 {
-            self.camera.yaw += mouse.x * MOUSE_SENSITIVITY;
-            self.camera.pitch -= mouse.y * MOUSE_SENSITIVITY;
-            self.camera.pitch = self
-                .camera
-                .pitch
-                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
-        }
-
-        // Keyboard rotation (for desktop without mouse capture)
-        let rotation_speed = 2.0 * dt;
-        if input.action_down("camera_rot_left") {
-            self.camera.yaw -= rotation_speed;
-        }
-        if input.action_down("camera_rot_right") {
-            self.camera.yaw += rotation_speed;
-        }
-        if input.action_down("camera_rot_up") {
-            self.camera.pitch += rotation_speed;
-        }
-        if input.action_down("camera_rot_down") {
-            self.camera.pitch -= rotation_speed;
-        }
-        self.camera.pitch = self
-            .camera
-            .pitch
-            .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
-
-        // Determine movement input from keyboard or virtual joystick
-        let move_forward = input.action_down("move_forward") || move_input.z < -0.1;
-        let move_backward = input.action_down("move_backward") || move_input.z > 0.1;
-        let move_left = input.action_down("move_left") || move_input.x < -0.1;
-        let move_right = input.action_down("move_right") || move_input.x > 0.1;
-
-        let sprinting = input.action_down("sprint");
-        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
-
-        let max_speed = if self.is_flying {
-            if sprinting { 24.0 } else { 12.0 }
-        } else if self.on_ground {
-            if sprinting { 12.0 } else { 6.0 }
-        } else {
-            horizontal_speed.max(6.0)
-        };
-
-        let forward = Vec3::new(self.camera.yaw.cos(), 0.0, self.camera.yaw.sin()).normalize();
-        let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
-
-        let mut wish_direction = Vec3::ZERO;
-        if move_forward {
-            wish_direction += forward;
-        }
-        if move_backward {
-            wish_direction -= forward;
-        }
-        if move_left {
-            wish_direction -= right;
-        }
-        if move_right {
-            wish_direction += right;
-        }
-        if wish_direction.length_squared() > 0.0 {
-            wish_direction = wish_direction.normalize();
-        }
-
-        if self.is_flying {
-            let target_velocity = wish_direction * max_speed;
-            let blend = (10.0 * dt).clamp(0.0, 1.0);
-            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
-            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
-
-            if jump_pressed {
-                self.velocity.y += 60.0 * dt;
-            }
-            if input.action_down("crouch") {
-                self.velocity.y -= 60.0 * dt;
-            }
-            self.velocity.y *= (1.0 - 5.0 * dt).max(0.0);
-
-            self.apply_movement(dt, colliders, false);
-            self.on_ground = false;
-        } else {
-            let target_velocity = wish_direction * max_speed;
-            let acceleration = if self.on_ground { 15.0 } else { 3.0 };
-            let blend = (acceleration * dt).clamp(0.0, 1.0);
-            self.velocity.x += (target_velocity.x - self.velocity.x) * blend;
-            self.velocity.z += (target_velocity.z - self.velocity.z) * blend;
-            self.velocity.y -= crate::player::GRAVITY * dt;
-
-            if self.on_ground && jump_pressed {
-                self.velocity.y = crate::player::JUMP_FORCE;
-                self.on_ground = false;
-            }
-            self.apply_movement(dt, colliders, true);
-        }
-
-        let horizontal_speed = Vec3::new(self.velocity.x, 0.0, self.velocity.z).length();
-        let speed_ratio = (horizontal_speed / 12.0).clamp(0.0, 1.0);
-        let target_fov = 45.0 + speed_ratio.powi(3) * 20.0;
-        self.current_fov += (target_fov - self.current_fov) * dt * 8.0;
-        self.camera.fov_y_degrees = self.current_fov;
-
-        let target_bob = if self.on_ground {
-            (horizontal_speed / 6.0).min(1.0)
-        } else {
-            0.0
-        };
-        self.bob_intensity += (target_bob - self.bob_intensity) * dt * 10.0;
-        if self.on_ground && horizontal_speed > 0.1 {
-            self.bob_time += dt * (horizontal_speed * 0.8 + 1.0);
-        }
-    }
-
-    fn render_camera(&self) -> Camera {
-        let mut camera = self.camera;
-        if self.bob_intensity > 0.001 {
-            let forward = camera.forward();
-            let right = Vec3::new(-forward.z, 0.0, forward.x).normalize();
-            camera.position.y += (self.bob_time * 2.0).sin() * 0.04 * self.bob_intensity;
-            camera.position += right * (self.bob_time.cos() * 0.02 * self.bob_intensity);
-        }
-        camera
-    }
-
-    fn apply_movement(&mut self, dt: f32, colliders: &[Aabb], apply_gravity: bool) {
-        if self.is_flying {
-            self.camera.position += self.velocity * dt;
-            return;
-        }
-
-        let next_x = self.camera.position.x + self.velocity.x * dt;
-        if !self.collides(
-            Vec3::new(next_x, self.camera.position.y, self.camera.position.z),
-            colliders,
-        ) {
-            self.camera.position.x = next_x;
-        } else {
-            self.velocity.x = 0.0;
-        }
-
-        let next_z = self.camera.position.z + self.velocity.z * dt;
-        if !self.collides(
-            Vec3::new(self.camera.position.x, self.camera.position.y, next_z),
-            colliders,
-        ) {
-            self.camera.position.z = next_z;
-        } else {
-            self.velocity.z = 0.0;
-        }
-
-        let next_y = self.camera.position.y + self.velocity.y * dt;
-        let previous_y = self.camera.position.y;
-        let player_min = Vec3::new(
-            self.camera.position.x - PLAYER_RADIUS,
-            next_y - PLAYER_HEIGHT,
-            self.camera.position.z - PLAYER_RADIUS,
-        );
-        let player_max = Vec3::new(
-            self.camera.position.x + PLAYER_RADIUS,
-            next_y + 0.1,
-            self.camera.position.z + PLAYER_RADIUS,
-        );
-
-        let mut collided_y = false;
-        for collider in colliders {
-            if !overlaps(player_min, player_max, collider) {
-                continue;
-            }
-            if self.velocity.y <= 0.0 && previous_y - PLAYER_HEIGHT >= collider.max.y - 0.1 {
-                self.camera.position.y = collider.max.y + PLAYER_HEIGHT + 0.001;
-                self.velocity.y = 0.0;
-                self.on_ground = true;
-                collided_y = true;
-                break;
-            }
-            if self.velocity.y > 0.0 && previous_y + 0.1 <= collider.min.y + 0.1 {
-                self.camera.position.y = collider.min.y - 0.1 - 0.001;
-                self.velocity.y = 0.0;
-                self.on_ground = false;
-                collided_y = true;
-                break;
-            }
-        }
-
-        if collided_y {
-            return;
-        }
-
-        self.camera.position.y = next_y;
-        if !apply_gravity {
-            return;
-        }
-
-        if self.velocity.y < 0.0 {
-            let ground_min = Vec3::new(
-                self.camera.position.x - PLAYER_RADIUS,
-                self.camera.position.y - PLAYER_HEIGHT - 0.1,
-                self.camera.position.z - PLAYER_RADIUS,
-            );
-            let ground_max = Vec3::new(
-                self.camera.position.x + PLAYER_RADIUS,
-                self.camera.position.y - PLAYER_HEIGHT,
-                self.camera.position.z + PLAYER_RADIUS,
-            );
-            self.on_ground = colliders
-                .iter()
-                .any(|collider| overlaps(ground_min, ground_max, collider));
-        } else {
-            self.on_ground = false;
-        }
-    }
-
-    fn collides(&self, position: Vec3, colliders: &[Aabb]) -> bool {
-        let epsilon = 0.001;
-        let player_min = Vec3::new(
-            position.x - PLAYER_RADIUS + epsilon,
-            position.y - PLAYER_HEIGHT + epsilon,
-            position.z - PLAYER_RADIUS + epsilon,
-        );
-        let player_max = Vec3::new(
-            position.x + PLAYER_RADIUS - epsilon,
-            position.y + 0.1 - epsilon,
-            position.z + PLAYER_RADIUS - epsilon,
-        );
-        colliders
-            .iter()
-            .any(|collider| overlaps(player_min, player_max, collider))
-    }
-}
-
-fn overlaps(min: Vec3, max: Vec3, collider: &Aabb) -> bool {
-    min.x <= collider.max.x
-        && max.x >= collider.min.x
-        && min.y <= collider.max.y
-        && max.y >= collider.min.y
-        && min.z <= collider.max.z
-        && max.z >= collider.min.z
 }

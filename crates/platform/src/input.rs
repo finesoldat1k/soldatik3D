@@ -46,6 +46,10 @@ pub struct Input {
     primary_pressed: bool,
     primary_released: bool,
     cursor_captured: bool,
+    /// Display density reported by the window, in physical pixels per logical
+    /// pixel. `None` until a window exists, in which case [`Input::scale_factor`]
+    /// reports a neutral `1.0`.
+    scale_factor: Option<f32>,
     /// Set once the platform reports a touch; stays true for the session.
     touch_mode: bool,
     suppressed_motion_frames: u8,
@@ -140,6 +144,21 @@ impl Input {
 
     pub fn cursor_captured(&self) -> bool {
         self.cursor_captured
+    }
+
+    /// Physical pixels per logical pixel reported by the window.
+    ///
+    /// Mobile displays commonly report 2–3, desktop HiDPI screens 1.5–2.
+    /// GUI code should multiply its logical metrics by this value because the
+    /// UI works in physical pixels.
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor.unwrap_or(1.0)
+    }
+
+    pub fn set_scale_factor(&mut self, scale_factor: f32) {
+        if scale_factor.is_finite() && scale_factor > 0.0 {
+            self.scale_factor = Some(scale_factor);
+        }
     }
 
     /// Text typed during this frame, as reported by the platform. Used by the

@@ -41,7 +41,9 @@ impl TouchCameraStyle {
     pub fn from_theme(_theme: &Theme) -> Self {
         Self {
             area: None,
-            sensitivity: 0.12,
+            // Radians of rotation per physical pixel. A full-height swipe
+            // rotates roughly 120 degrees on a 720 px tall phone.
+            sensitivity: 0.003,
             enable_mouse: false,
         }
     }
@@ -64,7 +66,7 @@ impl Ui {
         if state.dragging {
             if let Some(pointer) = state.pointer.and_then(|id| self.input.pointer(id).copied())
                 && pointer.down
-                && self.active == Some((pointer.id, CAMERA_OWNER))
+                && self.active_owner(pointer.id) == Some(CAMERA_OWNER)
             {
                 let delta = pointer.position - state.last_position;
                 state.last_position = pointer.position;
@@ -77,20 +79,18 @@ impl Ui {
             return Vec2::ZERO;
         }
 
-        let pressed = if self.active.is_none() {
-            self.input
-                .pointers
-                .iter()
-                .find(|pointer| {
-                    pointer.pressed
-                        && area.contains(pointer.position)
-                        && (pointer.touch() || style.enable_mouse)
-                        && !self.position_blocked(pointer.position)
-                })
-                .copied()
-        } else {
-            None
-        };
+        let pressed = self
+            .input
+            .pointers
+            .iter()
+            .find(|pointer| {
+                pointer.pressed
+                    && !self.pointer_claimed(pointer.id)
+                    && area.contains(pointer.position)
+                    && (pointer.touch() || style.enable_mouse)
+                    && !self.position_blocked(pointer.position)
+            })
+            .copied();
         if let Some(pointer) = pressed
             && self.claim_pointer(pointer.id, CAMERA_OWNER)
         {
@@ -103,6 +103,6 @@ impl Ui {
 
     /// True while the camera widget owns a touch.
     pub fn camera_active(&self) -> bool {
-        self.active.is_some_and(|(_, owner)| owner == CAMERA_OWNER)
+        self.owner_active(CAMERA_OWNER)
     }
 }

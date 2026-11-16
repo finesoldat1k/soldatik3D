@@ -37,6 +37,11 @@ impl PlatformWindow {
         (size.width, size.height)
     }
 
+    /// Physical pixels per logical pixel for the current display.
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
     pub fn set_title(&self, title: &str) {
         self.window.set_title(title);
     }

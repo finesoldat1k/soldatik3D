@@ -5,10 +5,10 @@
 //! debug interface. Camera spawning and selection are engine features exposed
 //! through [`runtime::World`] and the console.
 
-pub mod debug_ui;
 pub mod demo;
+pub mod level;
+pub mod physics;
 pub mod player;
-pub mod world;
 
 pub use demo::DemoGame;
 
@@ -25,6 +25,15 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: runtime::winit::platform::android::activity::AndroidApp) {
+    use runtime::winit::platform::android::activity::WindowManagerFlags;
+
+    // winit 0.30 cannot toggle Android fullscreen through the window API, so
+    // the native activity flags are the only way to hide the system bars and
+    // keep the display awake during play.
+    app.set_window_flags(
+        WindowManagerFlags::FULLSCREEN | WindowManagerFlags::KEEP_SCREEN_ON,
+        WindowManagerFlags::FORCE_NOT_FULLSCREEN,
+    );
     if let Err(error) = runtime::run_android(DemoGame::new(), app) {
         eprintln!("[demo] android_main failed: {error:?}");
     }

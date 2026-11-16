@@ -841,7 +841,7 @@ impl OpenGlRenderer {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
+            .as_millis();
         let filename = format!("screenshot_{timestamp}.png");
         let gl = self.context.glow();
         let (width, height) = self.extent();
@@ -1106,16 +1106,11 @@ unsafe fn texture_2d_rgba8(
             glow::UNSIGNED_BYTE,
             glow::PixelUnpackData::Slice(Some(pixels)),
         );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
+        // World UVs are tiled in world space and routinely exceed 1.0.
+        // Repeat wrapping matches the Vulkan backend; clamping stretched the
+        // last texel across entire walls and looked blurry.
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
         if nearest_filter {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,

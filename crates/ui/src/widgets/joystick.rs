@@ -79,6 +79,14 @@ impl JoystickStyle {
             enable_mouse: true,
         }
     }
+
+    /// Scales the visual sizes for a high-DPI display.
+    pub fn scaled(mut self, scale: f32) -> Self {
+        let scale = scale.clamp(0.5, 3.0);
+        self.radius *= scale;
+        self.handle_radius *= scale;
+        self
+    }
 }
 
 impl Ui {
@@ -93,7 +101,7 @@ impl Ui {
             let pointer = state.pointer.and_then(|id| self.input.pointer(id).copied());
             match pointer {
                 Some(pointer)
-                    if pointer.down && self.active == Some((pointer.id, JOYSTICK_OWNER)) =>
+                    if pointer.down && self.active_owner(pointer.id) == Some(JOYSTICK_OWNER) =>
                 {
                     let delta = pointer.position - state.base;
                     let distance = delta.length();
@@ -118,18 +126,18 @@ impl Ui {
                     state.reset();
                 }
             }
-        } else if self.active.is_none()
-            && let Some(pointer) = self
-                .input
-                .pointers
-                .iter()
-                .find(|pointer| {
-                    pointer.pressed
-                        && area.contains(pointer.position)
-                        && (pointer.touch() || style.enable_mouse)
-                        && !self.position_blocked(pointer.position)
-                })
-                .copied()
+        } else if let Some(pointer) = self
+            .input
+            .pointers
+            .iter()
+            .find(|pointer| {
+                pointer.pressed
+                    && !self.pointer_claimed(pointer.id)
+                    && area.contains(pointer.position)
+                    && (pointer.touch() || style.enable_mouse)
+                    && !self.position_blocked(pointer.position)
+            })
+            .copied()
             && self.claim_pointer(pointer.id, JOYSTICK_OWNER)
         {
             state.active = true;

@@ -142,6 +142,7 @@ impl<G: Game> App<G> {
                 return;
             }
         };
+        self.input.set_scale_factor(window.scale_factor());
         let surface = match window.surface() {
             Ok(surface) => surface,
             Err(error) => {
@@ -450,6 +451,9 @@ impl<G: Game> ApplicationHandler for App<G> {
                 {
                     eprintln!("[engine] resize failed: {error:?}");
                 }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.input.set_scale_factor(scale_factor as f32);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_cursor_position(scene::glam::Vec2::new(
